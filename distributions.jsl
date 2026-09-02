@@ -1,0 +1,57 @@
+Names Default To Here( 1 );
+
+// 1. Percorsi con slash normali '/'
+csvPath = "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/example1.csv";
+outputDir = "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/figures/distributions/";
+
+If( !Directory Exists( outputDir ),
+	Create Directory( outputDir )
+);
+
+// 2. Apertura tabella dati
+dt = Open( csvPath );
+
+// 3. Generazione report in orientamento standard (istogramma verticale con barre verso destra)
+distObj = dt << Distribution(
+	Continuous Distribution( Column( :r ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :b ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :swpd_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :free_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :buff_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :cache_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :si ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :so ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :bi ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :bo ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :in ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :cs ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :us ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :sy ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :id ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :wa ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :st ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :cpu_temp_c ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :gpu_temp_c ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
+	Continuous Distribution( Column( :throttled ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal )
+);
+
+rep = Report( distObj );
+
+// 4. Salva singolarmente ciascuna distribuzione (Istogramma + QQ plot affiancati + Tabelle sotto)
+cols = {
+	"r", "b", "swpd_kb", "free_kb", "buff_kb", "cache_kb", "si", "so", 
+	"bi", "bo", "in", "cs", "us", "sy", "id", "wa", "st", 
+	"cpu_temp_c", "gpu_temp_c", "throttled"
+};
+
+For( i = 1, i <= N Items( cols ), i++,
+	colName = cols[i];
+	Try(
+		box = rep[Outline Box( colName )];
+		box << Save Picture( outputDir || "distribuzione_" || colName || ".png", "PNG" );
+	,
+		Show( "Box non trovato per: " || colName )
+	);
+);
+
+Print( "Salvataggio completato in: " || outputDir );
