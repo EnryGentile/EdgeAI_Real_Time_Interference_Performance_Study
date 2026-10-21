@@ -842,7 +842,7 @@ def wait_for_post_boot_transient(wait_seconds: int):
 
 
 def trigger_board_reboot():
-    """Sincronizza i dischi ed esegue il riavvio della board con fallback tra sudo reboot e systemctl."""
+    """Sincronizza i dischi ed esegue il riavvio della board con fallback a catena."""
     print("\n" + "=" * 65)
     print(" [REBOOT] Sincronizzazione filesystem e riavvio della board in corso...")
     print("=" * 65)
@@ -850,16 +850,44 @@ def trigger_board_reboot():
     if os.name != "nt":
         try:
             subprocess.run(["sync"], check=False, timeout=10)
-            res = subprocess.run(["sudo", "-n", "reboot"], check=False, timeout=10)
-            if res.returncode != 0:
-                subprocess.run(["systemctl", "reboot"], check=False, timeout=10)
+
+            # Tentativo 1: sudo -n reboot (non interattivo, funziona se NOPASSWD è configurato)
+            res1 = subprocess.run(["sudo", "-n", "reboot"], capture_output=True, text=True, timeout=10)
+            if res1.returncode == 0:
+                sys.exit(0)
+
+            # Tentativo 2: systemctl reboot
+            res2 = subprocess.run(["systemctl", "reboot"], capture_output=True, text=True, timeout=10)
+            if res2.returncode == 0:
+                sys.exit(0)
+
+            # Tentativo 3: sudo reboot interattivo (se presente un terminale TTY per inserire password)
+            print(" [INFO] Tentativo di reboot con sudo (potrebbe richiedere la password)...")
+            res3 = subprocess.run(["sudo", "reboot"], check=False, timeout=15)
+            if res3.returncode == 0:
+                sys.exit(0)
+
+            # Se tutti i tentativi sono falliti:
+            err_msg1 = (res1.stderr or "").strip()
+            err_msg2 = (res2.stderr or "").strip()
+            print("\n" + "!" * 65)
+            print(" [WARNING REBOOT] Tutti i tentativi automatici di reboot sono falliti.")
+            if err_msg1:
+                print(f" Dettaglio sudo: {err_msg1}")
+            if err_msg2:
+                print(f" Dettaglio systemctl: {err_msg2}")
+            print("\n Per consentire alla Jetson di riavviarsi da sola senza password tra un run e l'altro,")
+            print(" esegui una volta sulla shell della board:")
+            print("   echo \"$USER ALL=(ALL) NOPASSWD: /sbin/reboot, /bin/systemctl reboot\" | sudo tee /etc/sudoers.d/jetson-reboot")
+            print("!" * 65 + "\n")
+            return
         except Exception as e:
             log_fallback_error("trigger_board_reboot", e)
-            print(f" [WARNING] Impossibile eseguire il reboot automatico ({e}). Proseguimento senza reboot.")
+            print(f" [WARNING] Eccezione durante il reboot automatico ({e}). Proseguimento senza reboot.")
             return
     else:
         print(" [INFO] Ambiente Windows rilevato: simulazione comando 'sudo reboot'.")
-    sys.exit(0)
+        sys.exit(0)
 
 
 # ==============================================================================
@@ -1488,7 +1516,9 @@ def parse_args():
     parser.add_argument("-r", "--repetitions", type=int, default=None, help="Numero di ripetizioni per esperimento (default: 3)")
     parser.add_argument("--transient-wait", type=int, default=None, help="Attesa transitorio post-boot in secondi (default: 90s per Jetson Orin)")
     parser.add_argument("--task-timeout", type=int, default=300, help="Timeout massimo in secondi per singolo task llama-cli (default: 300s = 5 min)")
-    parser.add_argument("--no-reboot", action="store_true", default=False, help="Non riavviare la board a fine esperimento (esegui tutta la coda in sequenza)")
+    reboot_grp = parser.add_mutually_exclusive_group()
+    reboot_grp.add_argument("--reboot", dest="reboot", action="store_true", default=None, help="Forza il riavvio della board a fine esperimento")
+    reboot_grp.add_argument("--no-reboot", dest="reboot", action="store_false", help="Non riavviare la board a fine esperimento (esegui tutta la coda in sequenza)")
     parser.add_argument(
         "--ssh-target",
         type=str,
@@ -1569,7 +1599,7 @@ def main():
             samples_in = args.samples if args.samples is not None else current_cfg.get("sample_count", 40)
             reps_in = args.repetitions if args.repetitions is not None else current_cfg.get("repetitions", 3)
             wait_in = args.transient_wait if args.transient_wait is not None else current_cfg.get("transient_wait_sec", 90)
-            reboot_in = False if args.no_reboot else current_cfg.get("reboot_after_run", True)
+            reboot_in = args.reboot if args.reboot is not None else current_cfg.get("reboot_after_run", True)
             ssh_target_in = args.ssh_target if args.ssh_target is not None else current_cfg.get("ssh_target")
             ssh_dest_in = args.ssh_dest if args.ssh_dest is not None else current_cfg.get("ssh_dest", "./EdgeAI_Results")
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
@@ -1594,8 +1624,8 @@ def main():
                 config = json.load(f)
         else:
             config = current_cfg
-            if args.no_reboot:
-                config["reboot_after_run"] = False
+            if args.reboot is not None:
+                config["reboot_after_run"] = args.reboot
 
         if args.sync_only:
             sync_all_existing_csvs_via_ssh(config)
@@ -1657,6 +1687,8 @@ def main():
                 else:
                     print(" [FINITO] Questo era l'ultimo esperimento della coda. Riavvio finale di pulizia.")
                 trigger_board_reboot()
+            else:
+                print(" [INFO] Reboot disattivato da configurazione (reboot_after_run=False).")
 
     except SystemExit:
         raise

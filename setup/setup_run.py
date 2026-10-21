@@ -719,10 +719,18 @@ def parse_arguments():
         default=90,
         help="Tempo di attesa in secondi dopo il boot per far esaurire il transitorio (default: 90s per Jetson Orin)"
     )
-    parser.add_argument(
-        "--no-reboot",
+    reboot_grp = parser.add_mutually_exclusive_group()
+    reboot_grp.add_argument(
+        "--reboot",
+        dest="reboot",
         action="store_true",
-        default=False,
+        default=None,
+        help="Abilita il riavvio automatico della board (default: attivo)"
+    )
+    reboot_grp.add_argument(
+        "--no-reboot",
+        dest="reboot",
+        action="store_false",
         help="Disabilita il riavvio automatico al termine di ogni esperimento (utile per test/debug)"
     )
     parser.add_argument(
@@ -787,7 +795,7 @@ def parse_arguments():
         args.samples,
         args.repetitions,
         args.transient_wait,
-        not args.no_reboot,
+        True if args.reboot is None else args.reboot,
         args.ssh_target,
         args.ssh_dest,
         args.ssh_port,
