@@ -55,6 +55,10 @@ FALLBACK_ERROR_LOG = RESULTS_DIR / "runtime_error_fallback.log"
 STRESS_TMP_DIR = Path("/tmp/edgeai_stress_ng_tmp") if os.name != "nt" else (PROJECT_ROOT / "tmp_stress")
 
 # Livelli del Piano Fattoriale (DoE)
+# I fattori sperimentali sono esclusivamente:
+#   1. Carico worker (N_LEVELS): 25%, 50%, 75%, 100%
+#   2. Working-set size (S_LEVELS): 25%, 50%, 75% (solo per mem e io)
+# Il tempo è fisso e costante al tempo totale (t_tot) per l'intera durata della richiesta.
 N_LEVELS = [
     ("N25", "25% N_tot", 0.25),
     ("N50", "50% N_tot", 0.50),
@@ -68,7 +72,7 @@ S_LEVELS = [
     ("S75", "75% S_tot", 0.75),
 ]
 
-D_LEVELS = ["t_prefill", "t_decode", "t_tot"]
+D_LEVELS = ["t_tot"]
 
 VMSTAT_COLUMNS = [
     "timestamp_s", "r", "b", "swpd_kb", "free_kb", "buff_kb", "cache_kb",

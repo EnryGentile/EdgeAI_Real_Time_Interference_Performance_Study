@@ -1,88 +1,159 @@
 Names Default To Here( 1 );
 
+// ==============================================================================
+// IMPORTANZA E SIGNIFICATIVITA DEI FATTORI DoE (Traccia A1)
+//
+// Fattori sperimentali:
+//   - 1. Carico worker (num_workers: 25% N_tot, 50% N_tot, 75% N_tot, N_tot)
+//   - 2. Working-set size (size: 25% S_tot, 50% S_tot, 75% S_tot) - presente SOLO per mem e io.
+//   - La durata e costante e fissata al tempo totale (duration: t_tot), quindi non e un fattore.
+// ==============================================================================
+
 // 1. Configurazione percorsi di salvataggio
-outputDir = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/figures/doe_analysis/";
+outputDir = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/figures/doe_analysis/";
 If( !Directory Exists( outputDir ),
 	Create Directory( outputDir )
 );
 
-// 2. Caricamento della tabella dati
-table1 = Open(
-	"$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/doe_example.csv",
-	columns(
-		New Column( "num_workers", Character, "Nominal" ),
-		New Column( "size", Character, "Nominal" ),
-		New Column( "duration", Character, "Nominal" ),
-		New Column( "ttft_ms", Numeric, "Continuous", Format( "Best", 12 ) ),
-		New Column( "per_token_lat_ms", Numeric, "Continuous", Format( "Best", 12 ) ),
-		New Column( "throughput_tok_s", Numeric, "Continuous", Format( "Best", 12 ) ),
-		New Column( "jitter_ms", Numeric, "Continuous", Format( "Best", 12 ) )
-	),
-	Import Settings(
-		End Of Line( CRLF, CR, LF ),
-		End Of Field( Comma, CSV( 1 ) ),
-		Labels( 1 ),
-		Column Names Start( 1 ),
-		Data Starts( 2 )
+// 2. Selezione ed apertura tabella dati DoE
+// Prova prima i percorsi standard del progetto, con fallback su selezione interattiva
+defaultCsv1 = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/results/doe_slm-1b_gpu_mmlu_cpu.csv";
+defaultCsv2 = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/doe_example.csv";
+
+csvPath = "";
+If( File Exists( defaultCsv1 ),
+	csvPath = defaultCsv1;
+,
+	If( File Exists( defaultCsv2 ),
+		csvPath = defaultCsv2;
+	,
+		csvPath = Pick File( "Seleziona il file DoE CSV (results/doe_*.csv)", "", {"File CSV|csv", "Tutti i file|*"} );
 	)
 );
 
-responses = {"ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"};
-factors = {"num_workers", "size", "duration"};
+If( csvPath == "",
+	Print( "[ERRORE] Nessun file DoE selezionato. Script interrotto." );
+	Stop();
+);
 
-// 3. Esecuzione Fit Model con "Plot Actual by Predicted" abilitato per tutte le risposte
-fmObj = table1 << Fit Model(
-	Y( :ttft_ms, :per_token_lat_ms, :throughput_tok_s, :jitter_ms ),
-	Effects(
-		:num_workers, :size, :num_workers * :size, :duration,
-		:num_workers * :duration, :size * :duration,
-		:num_workers * :size * :duration
-	),
-	Personality( "Standard Least Squares" ),
-	Emphasis( "Effect Leverage" ),
-	Run(
-		:ttft_ms << {
-			Summary of Fit( 1 ),
-			Analysis of Variance( 1 ),
-			Parameter Estimates( 1 ),
-			Plot Actual by Predicted( 1 )
-		},
-		:per_token_lat_ms << {
-			Summary of Fit( 1 ),
-			Analysis of Variance( 1 ),
-			Parameter Estimates( 1 ),
-			Plot Actual by Predicted( 1 )
-		},
-		:throughput_tok_s << {
-			Summary of Fit( 1 ),
-			Analysis of Variance( 1 ),
-			Parameter Estimates( 1 ),
-			Plot Actual by Predicted( 1 )
-		},
-		:jitter_ms << {
-			Summary of Fit( 1 ),
-			Analysis of Variance( 1 ),
-			Parameter Estimates( 1 ),
-			Plot Actual by Predicted( 1 )
-		}
+Print( "Apertura tabella DoE: " || csvPath );
+table1 = Open( csvPath );
+
+// 3. Filtraggio Durata (DoE analizzato esclusivamente per duration = 't_tot')
+colNames = table1 << Get Column Names( "String" );
+If( Contains( colNames, "duration" ),
+	durVals = Associative Array( Column( table1, "duration" ) << Get Values );
+	If( Contains( durVals, "t_tot" ),
+		table1 << Select Where( :duration != "t_tot" );
+		nNonTot = N Row( table1 << Get Selected Rows );
+		If( nNonTot > 0,
+			Print( "Filtro applicato: selezionati esclusivamente i dati con durata totale (duration = 't_tot')." );
+			tableFiltered = table1 << Subset( Selected Rows( 0 ), Selected columns only( 0 ) );
+			Close( table1, NoSave );
+			table1 = tableFiltered;
+		);
+		table1 << Clear Select;
+	);
+);
+
+// 4. Configurazione tipi di modellazione delle colonne
+metricCols = {"ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"};
+For( m = 1, m <= N Items( metricCols ), m++,
+	If( Contains( colNames, metricCols[m] ),
+		Column( table1, metricCols[m] ) << Set Modeling Type( "Continuous" );
+		Column( table1, metricCols[m] ) << Set Data Type( "Numeric" );
 	)
+);
+
+Column( table1, "num_workers" ) << Set Modeling Type( "Nominal" );
+Column( table1, "num_workers" ) << Set Data Type( "Character" );
+
+// Rilevamento presenza del fattore 'size' (stressor 3D: mem, io)
+hasSize = 0;
+If( Contains( colNames, "size" ),
+	sizeVals = Associative Array( Column( table1, "size" ) << Get Values );
+	sizeVals << Remove( "." );
+	sizeVals << Remove( "" );
+	sizeVals << Remove( "N/A" );
+	sizeVals << Remove( "NaN" );
+	sizeVals << Remove( "none" );
+	If( N Items( sizeVals ) > 1,
+		hasSize = 1;
+		Column( table1, "size" ) << Set Modeling Type( "Nominal" );
+		Column( table1, "size" ) << Set Data Type( "Character" );
+	);
+);
+
+// 5. Costruzione del modello ANOVA (Fit Model)
+// Effetti:
+//  - DoE 3D: num_workers, size, num_workers * size
+//  - DoE 2D: num_workers
+// Nota: 'duration' NON e inclusa negli effetti perche e fissa a t_tot (DF=0 genererebbe singolarita)
+responses = {"ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"};
+
+If( hasSize,
+	Print( "-> Modello DoE 3D: Fattori attivi = [:num_workers, :size] con interazione (Durata fissa t_tot)" );
+	factors = {"num_workers", "size"};
+	fmObj = table1 << Fit Model(
+		Y( :ttft_ms, :per_token_lat_ms, :throughput_tok_s, :jitter_ms ),
+		Effects( :num_workers, :size, :num_workers * :size ),
+		Personality( "Standard Least Squares" ),
+		Emphasis( "Effect Leverage" ),
+		Run(
+			:ttft_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:per_token_lat_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:throughput_tok_s << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:jitter_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			}
+		)
+	);
+,
+	Print( "-> Modello DoE 2D: Fattore attivo = [:num_workers] (Durata fissa t_tot, size assente)" );
+	factors = {"num_workers"};
+	fmObj = table1 << Fit Model(
+		Y( :ttft_ms, :per_token_lat_ms, :throughput_tok_s, :jitter_ms ),
+		Effects( :num_workers ),
+		Personality( "Standard Least Squares" ),
+		Emphasis( "Effect Leverage" ),
+		Run(
+			:ttft_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:per_token_lat_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:throughput_tok_s << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			},
+			:jitter_ms << {
+				Summary of Fit( 1 ), Analysis of Variance( 1 ), Parameter Estimates( 1 ), Plot Actual by Predicted( 1 )
+			}
+		)
+	);
 );
 
 repFM = Report( fmObj );
 
-// Forza l'apertura a video di tutti i riquadri delle interazioni
+// Forza l'apertura a video di tutti i riquadri
 allBoxes = repFM << XPath( "//OutlineBox" );
 For( b = 1, b <= N Items( allBoxes ), b++,
 	allBoxes[b] << Close( 0 );
 );
 
-// Salva la panoramica generale del modello
+// Salva panoramica generale del modello
 repFM << Save Picture( outputDir || "all_fit_models_summary.png", "PNG" );
 
-// Genera e salva le colonne dei residui
+// Genera le colonne dei residui
 fmObj << Residuals;
 
-// 4. Analisi Distribuzioni dei Residui con test di Shapiro-Wilk
+// 6. Analisi Distribuzioni dei Residui con test di Shapiro-Wilk
 distObj = table1 << Distribution(
 	Stack( 1 ),
 	Continuous Distribution( Column( :Residual jitter_ms ), Quantile Box Plot( 1 ), Fit Normal( Goodness of Fit( 1 ) ), Normal Quantile Plot( 1 ) ),
@@ -94,7 +165,7 @@ distObj = table1 << Distribution(
 repDist = Report( distObj );
 repDist << Save Picture( outputDir || "all_residuals_distributions.png", "PNG" );
 
-// 5. Ciclo di analisi per singola metrica
+// 7. Ciclo di analisi per ciascuna metrica di prestazione
 For( r = 1, r <= N Items( responses ), r++,
 	respName = responses[r];
 	resColName = "Residual " || respName;
@@ -103,15 +174,13 @@ For( r = 1, r <= N Items( responses ), r++,
 	Print( "ANALISI PER LA METRICA: " || respName );
 	Print( "=========================================================" );
 	
-	// Riquadro della risposta corrente
 	responseBox = repFM[Outline Box( "Response " || respName )];
 	
-	// A. Esportazione del Grafico "Risposte Osservate rispetto a Previste"
+	// A. Esportazione del Grafico "Actual by Predicted Plot"
 	Try(
 		actByPredBox = responseBox[Outline Box( "Actual by Predicted Plot" )];
 		actByPredBox << Save Picture( outputDir || "actual_by_predicted_" || respName || ".png", "PNG" );
 	,
-		// Fallback se l'interfaccia di JMP è in lingua italiana
 		Try(
 			actByPredBox = responseBox[Outline Box( "Grafico delle risposte osservate rispetto alle risposte previste" )];
 			actByPredBox << Save Picture( outputDir || "actual_by_predicted_" || respName || ".png", "PNG" );
@@ -119,7 +188,6 @@ For( r = 1, r <= N Items( responses ), r++,
 	);
 	
 	// B. Calcolo dell'Importanza (% Devianza Spiegata SS/SST)
-	// Gestione bilingue (EN / IT) delle tabelle interne
 	ssError = .; sst = .;
 	Try(
 		ssError = responseBox[Outline Box( "Analysis of Variance" )][Number Col Box( "Sum of Squares" )][2];
@@ -141,10 +209,9 @@ For( r = 1, r <= N Items( responses ), r++,
 	impErr = (ssError / sst) * 100;
 	Print( "Errore Sperimentale (Residui): SS = " || Char( Round( ssError, 4 ) ) || " | Quota: " || Char( Round( impErr, 2 ) ) || " %" );
 	
-	// Esporta l'intero report della singola metrica con tutte le interazioni aperte
 	responseBox << Save Picture( outputDir || "model_report_" || respName || ".png", "PNG" );
 	
-	// C. Estrazione del test di Shapiro-Wilk ed esportazione della distribuzione dei residui
+	// C. Estrazione del test di Shapiro-Wilk sui Residui
 	resDistBox = repDist[Outline Box( resColName )];
 	resDistBox << Save Picture( outputDir || "distribution_" || resColName || ".png", "PNG" );
 	
@@ -152,12 +219,12 @@ For( r = 1, r <= N Items( responses ), r++,
 	Try(
 		shapiroPVal = resDistBox[Outline Box( "Goodness-of-Fit Test" )][Number Col Box( "Prob < W" )][1];
 	,
-		shapiroPVal = resDistBox[Outline Box( "Bontà dell'adattamento" )][Number Col Box( "Prob < W" )][1];
+		shapiroPVal = resDistBox[Outline Box( "Bonta dell'adattamento" )][Number Col Box( "Prob < W" )][1];
 	);
 	
 	Print( "Test Shapiro-Wilk sui Residui: Prob < W = " || Char( shapiroPVal ) );
 	
-	// D. Biforcazione automatica: ANOVA vs Kruskal-Wallis
+	// D. Valutazione Significativita: ANOVA (se p >= 0.05) vs Kruskal-Wallis (se p < 0.05)
 	If( !Is Missing( shapiroPVal ) & shapiroPVal >= 0.05,
 		Print( "ESITO: Residui Normali (p >= 0.05). Valutazione F-Test (ANOVA):" );
 		pF = .;

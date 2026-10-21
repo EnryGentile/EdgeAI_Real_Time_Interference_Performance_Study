@@ -1,57 +1,89 @@
 Names Default To Here( 1 );
 
-// 1. Percorsi con slash normali '/'
-csvPath = "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/example1.csv";
-outputDir = "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/figures/distributions/";
+// ==============================================================================
+// ANALISI DELLE DISTRIBUZIONI E TEST DI NORMALITA (Traccia A1)
+//
+// Analisi univariata (Istogrammi, Quantile Plot, Normal Quantile Plot, Test di Normalita)
+// per le serie temporali hardware vmstat e metriche di inferenza.
+// ==============================================================================
 
+// 1. Configurazione percorso di salvataggio figure
+outputDir = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/figures/distributions/";
 If( !Directory Exists( outputDir ),
 	Create Directory( outputDir )
 );
 
-// 2. Apertura tabella dati
-dt = Open( csvPath );
+// 2. Selezione ed apertura tabella dati
+defaultCsv1 = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/example1.csv";
+defaultCsv2 = "$DESKTOP/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study/data_timeseries/baseline_SLM-1B_gpu_mmlu_rep1_timeseries.csv";
 
-// 3. Generazione report in orientamento standard (istogramma verticale con barre verso destra)
-distObj = dt << Distribution(
-	Continuous Distribution( Column( :r ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :b ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :swpd_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :free_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :buff_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :cache_kb ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :si ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :so ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :bi ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :bo ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :in ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :cs ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :us ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :sy ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :id ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :wa ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :st ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :cpu_temp_c ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :gpu_temp_c ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal ),
-	Continuous Distribution( Column( :throttled ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal )
+csvPath = "";
+If( File Exists( defaultCsv1 ),
+	csvPath = defaultCsv1;
+,
+	If( File Exists( defaultCsv2 ),
+		csvPath = defaultCsv2;
+	,
+		csvPath = Pick File( "Seleziona il file CSV delle serie temporali o task", "", {"File CSV|csv", "Tutti i file|*"} );
+	)
 );
 
-rep = Report( distObj );
+If( csvPath == "",
+	Print( "[ERRORE] Nessun file selezionato. Script interrotto." );
+	Stop();
+);
 
-// 4. Salva singolarmente ciascuna distribuzione (Istogramma + QQ plot affiancati + Tabelle sotto)
-cols = {
+Print( "Apertura dataset distribuzioni: " || csvPath );
+dt = Open( csvPath );
+
+// 3. Rilevamento delle colonne numeriche continue presenti
+colNames = dt << Get Column Names( "String" );
+targetCols = {
 	"r", "b", "swpd_kb", "free_kb", "buff_kb", "cache_kb", "si", "so", 
 	"bi", "bo", "in", "cs", "us", "sy", "id", "wa", "st", 
-	"cpu_temp_c", "gpu_temp_c", "throttled"
+	"cpu_temp_c", "gpu_temp_c", "throttled",
+	"ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"
 };
 
-For( i = 1, i <= N Items( cols ), i++,
-	colName = cols[i];
-	Try(
-		box = rep[Outline Box( colName )];
-		box << Save Picture( outputDir || "distribuzione_" || colName || ".png", "PNG" );
-	,
-		Show( "Box non trovato per: " || colName )
+presentCols = {};
+For( i = 1, i <= N Items( targetCols ), i++,
+	If( Contains( colNames, targetCols[i] ),
+		Column( dt, targetCols[i] ) << Set Modeling Type( "Continuous" );
+		Column( dt, targetCols[i] ) << Set Data Type( "Numeric" );
+		Insert Into( presentCols, targetCols[i] );
+	)
+);
+
+If( N Items( presentCols ) == 0,
+	Print( "[AVVISO] Nessuna colonna target trovata per l'analisi univariata." );
+	Stop();
+);
+
+// 4. Esecuzione report di distribuzione
+distExpr = Expr( dt << Distribution( Stack( 1 ) ) );
+For( i = 1, i <= N Items( presentCols ), i++,
+	cName = presentCols[i];
+	Insert Into( distExpr,
+		Substitute(
+			Expr( Continuous Distribution( Column( _c_ ), Quantile Box Plot( 1 ), Process Capability( 0 ), Normal Quantile Plot( 1 ), Fit Normal( Goodness of Fit( 1 ) ) ) ),
+			Expr( _c_ ), Parse( ":" || cName )
+		)
 	);
 );
 
-Print( "Salvataggio completato in: " || outputDir );
+distObj = Eval( distExpr );
+rep = Report( distObj );
+
+// 5. Salva singolarmente ciascuna distribuzione (Istogramma + QQ plot affiancati + Tabelle di adattamento)
+For( i = 1, i <= N Items( presentCols ), i++,
+	colName = presentCols[i];
+	Try(
+		box = rep[Outline Box( colName )];
+		box << Save Picture( outputDir || "distribuzione_" || colName || ".png", "PNG" );
+		Print( "   [OK] Esportata distribuzione per: " || colName );
+	,
+		Show( "Riquadro non trovato per: " || colName )
+	);
+);
+
+Print( "Salvataggio distribuzioni completato in: " || outputDir );
