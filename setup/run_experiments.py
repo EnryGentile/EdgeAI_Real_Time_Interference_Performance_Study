@@ -124,12 +124,13 @@ class SystemMonitor:
 
     @staticmethod
     def _read_thermal_zones() -> Tuple[float, float, int]:
-        """Legge le temperature CPU/GPU da /sys/class/thermal (o nvidia-smi) e lo stato di throttling."""
+        """Legge le temperature CPU/GPU da /sys/class/thermal, /sys/class/hwmon, o nvidia-smi e lo stato di throttling."""
         cpu_temps = []
         gpu_temps = []
         throttled = 0
 
         try:
+            # 1. Lettura da /sys/class/thermal (standard Linux e NVIDIA Jetson AGX Orin)
             for tz_dir in glob.glob("/sys/class/thermal/thermal_zone*"):
                 try:
                     type_path = os.path.join(tz_dir, "type")
@@ -156,6 +157,37 @@ class SystemMonitor:
                 except Exception:
                     continue
 
+            # 2. Fallback per CPU tramite /sys/class/hwmon (se non rilevato in /sys/class/thermal)
+            if not cpu_temps:
+                for hw_path in glob.glob("/sys/class/hwmon/hwmon*/temp*_input"):
+                    try:
+                        with open(hw_path, "r") as f:
+                            raw_t = float(f.read().strip())
+                        t_c = raw_t / 1000.0 if raw_t > 200 else raw_t
+                        if 10.0 <= t_c <= 120.0:
+                            cpu_temps.append(t_c)
+                    except Exception:
+                        pass
+
+            # 3. Fallback per GPU tramite nvidia-smi (GPU discrete su PC / Colab / Server)
+            if not gpu_temps:
+                try:
+                    res = subprocess.run(
+                        ["nvidia-smi", "--query-gpu=temperature.gpu", "--format=csv,noheader,nounits"],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                        timeout=1
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        for val_str in res.stdout.strip().splitlines():
+                            val = float(val_str.strip())
+                            if 10.0 <= val <= 120.0:
+                                gpu_temps.append(val)
+                except Exception:
+                    pass
+
+            # 4. Rilevamento thermal throttling
             for th_path in glob.glob("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"):
                 try:
                     max_path = th_path.replace("scaling_cur_freq", "cpuinfo_max_freq")
@@ -705,6 +737,7 @@ def _run_llama_cli_once(
         "per_token_lat_ms": round(per_token_lat_ms, 4),
         "throughput_tok_s": round(throughput_tok_s, 4),
         "jitter_ms": round(jitter_ms, 4),
+        "response_text": stdout_text.strip(),
     }
 
 
@@ -715,7 +748,7 @@ def run_single_llama_task(
     duration_mode: str = "t_tot",
     task_timeout_sec: int = 300,
     exp_id: str = "N/A"
-) -> Optional[Dict[str, float]]:
+) -> Optional[Dict[str, Any]]:
     """
     Esegue un singolo task su llama-cli con timeout di 5 minuti (300s):
       - Se il task supera il timeout di 5 minuti (300s), il processo viene sospeso/terminato
@@ -932,6 +965,8 @@ def sync_all_existing_csvs_via_ssh(config: Dict[str, Any]):
     if RESULTS_DIR.exists():
         for p in sorted(RESULTS_DIR.glob("*.csv")):
             files_to_send.append((p, "results"))
+        for p in sorted(RESULTS_DIR.glob("responses_*.json")):
+            files_to_send.append((p, "results"))
         if FALLBACK_ERROR_LOG.exists():
             files_to_send.append((FALLBACK_ERROR_LOG, "results"))
 
@@ -1074,7 +1109,8 @@ def trigger_emergency_fallback(
     exp: Dict[str, Any],
     monitor: Optional[SystemMonitor],
     partial_task_records: List[Dict[str, Any]],
-    exc: BaseException
+    exc: BaseException,
+    partial_responses: Optional[List[Dict[str, Any]]] = None
 ):
     """
     Procedura di emergenza attivata quando si verifica un errore bloccante in runtime:
@@ -1133,6 +1169,20 @@ def trigger_emergency_fallback(
         except Exception as e_tr:
             log_fallback_error("save_partial_tasks", e_tr, exp_id=exp_id)
 
+    # 4b. Salvataggio risposte del modello parziali
+    if partial_responses:
+        try:
+            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            partial_resp_path = RESULTS_DIR / f"fallback_partial_{exp_id}_responses.json"
+            with open(partial_resp_path, "w", encoding="utf-8") as f:
+                json.dump(partial_responses, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            fallback_files.append((partial_resp_path, "results"))
+            print(f" [FALLBACK] Salvate {len(partial_responses)} risposte parziali in: {partial_resp_path}")
+        except Exception as e_resp:
+            log_fallback_error("save_partial_responses", e_resp, exp_id=exp_id)
+
     # 5. Aggiornamento stato checkpoint per evitare boot-loop
     try:
         exp["status"] = "failed_fallback"
@@ -1162,6 +1212,7 @@ def execute_experiment(
     """Esegue tutti i sample_count task previsti per l'esperimento corrente con protezione try/except."""
     monitor: Optional[SystemMonitor] = None
     task_records: List[Dict[str, Any]] = []
+    responses_log: List[Dict[str, Any]] = []
 
     try:
         dataset_path = Path(config["dataset_path"])
@@ -1205,6 +1256,17 @@ def execute_experiment(
             sample_item = dataset[i % len(dataset)]
             prompt = format_mmlu_prompt(sample_item) if bench_lower == "mmlu" else format_spider_prompt(sample_item)
 
+            # Estrazione ground truth (risposta attesa)
+            ground_truth = ""
+            if bench_lower == "mmlu":
+                raw_ans = sample_item.get("answer")
+                if isinstance(raw_ans, int) and 0 <= raw_ans < 4:
+                    ground_truth = ["A", "B", "C", "D"][raw_ans]
+                elif raw_ans is not None:
+                    ground_truth = str(raw_ans)
+            else:
+                ground_truth = str(sample_item.get("query", ""))
+
             print(f" -> Task [{i + 1:02d}/{n_samples:02d}] in esecuzione...", end="", flush=True)
             metrics = run_single_llama_task(
                 config=config,
@@ -1220,9 +1282,11 @@ def execute_experiment(
                 continue
 
             vm_avg = monitor.get_window_average(metrics["t_start_mono"], metrics["t_end_mono"])
+            model_resp = metrics.get("response_text", "")
 
             record = {
                 "task_index": i + 1,
+                "sample_id": sample_item.get("id", i + 1),
                 "exp_id": exp["exp_id"],
                 "model_id": config["model_id"],
                 "device": config["device"],
@@ -1241,11 +1305,29 @@ def execute_experiment(
                 "throughput_tok_s": metrics["throughput_tok_s"],
                 "jitter_ms": metrics["jitter_ms"],
                 "task_duration_s": metrics["duration_s"],
+                "ground_truth": ground_truth,
+                "model_response": model_resp,
             }
             for k, v in vm_avg.items():
                 record[f"vmstat_{k}"] = v
 
             task_records.append(record)
+
+            responses_log.append({
+                "task_index": i + 1,
+                "sample_id": sample_item.get("id", i + 1),
+                "benchmark": config["benchmark_name"],
+                "prompt": prompt,
+                "model_response": model_resp,
+                "ground_truth": ground_truth,
+                "ttft_ms": metrics["ttft_ms"],
+                "per_token_lat_ms": metrics["per_token_lat_ms"],
+                "throughput_tok_s": metrics["throughput_tok_s"],
+                "jitter_ms": metrics["jitter_ms"],
+                "output_tokens": metrics["output_tokens"],
+                "task_duration_s": metrics["duration_s"],
+            })
+
             print(
                 f" TTFT={metrics['ttft_ms']:.1f}ms | "
                 f"TPOT={metrics['per_token_lat_ms']:.2f}ms/tok | "
@@ -1267,8 +1349,10 @@ def execute_experiment(
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         if exp["mode"] == "baseline":
             tasks_csv_path = RESULTS_DIR / f"baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_tasks.csv"
+            responses_json_path = RESULTS_DIR / f"responses_baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{exp['repetition']}.json"
         else:
             tasks_csv_path = RESULTS_DIR / f"tasks_{exp['exp_id']}.csv"
+            responses_json_path = RESULTS_DIR / f"responses_{exp['exp_id']}.json"
 
         write_header = not tasks_csv_path.exists() or exp["mode"] != "baseline" or exp["repetition"] == 1
         mode_flag = "w" if write_header else "a"
@@ -1283,10 +1367,19 @@ def execute_experiment(
                 os.fsync(f.fileno())
             print(f" [OK] Metriche per-task ({len(task_records)} task) salvate in: {tasks_csv_path}")
 
+        # Salvataggio file JSON strutturato con le risposte complete del modello
+        if responses_log:
+            with open(responses_json_path, "w", encoding="utf-8") as f:
+                json.dump(responses_log, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            print(f" [OK] Risposte del modello ({len(responses_log)} risposte) salvate in: {responses_json_path}")
+
         # 3. Aggregazione sulla Run per il DoE
         generated_files: List[Tuple[Path, str]] = [
             (ts_path, "data_timeseries"),
             (tasks_csv_path, "results"),
+            (responses_json_path, "results"),
         ]
 
         if task_records:
@@ -1364,7 +1457,8 @@ def execute_experiment(
             exp=exp,
             monitor=monitor,
             partial_task_records=task_records,
-            exc=exc
+            exc=exc,
+            partial_responses=responses_log
         )
         return []
 

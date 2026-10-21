@@ -39,8 +39,8 @@ In conformità ai requisiti sperimentali, i fattori del DoE sono rigorosamente:
 │   ├── plot_hardware_bottlenecks.py# Grafici colli di bottiglia hardware (CPU, Mem, I/O, Sys, Thermal)
 │   ├── importance_significance.jsl # Script JMP: ANOVA (SS/SST), Shapiro-Wilk residui, Kruskal-Wallis
 │   └── distributions.jsl           # Script JMP: Distribuzioni univariate, istogrammi e normal quantile plot
-├── data_timeseries/                # Serie temporali vmstat a 1 Hz (.csv per ogni run)
-├── results/                        # Risultati aggregati DoE (doe_*.csv) e metriche per-task
+├── data_timeseries/                # Serie temporali vmstat a 1 Hz (.csv con CPU/GPU temp e throttling)
+├── results/                        # Risultati DoE (doe_*.csv), metriche (tasks_*.csv) e risposte (responses_*.json)
 ├── figures/                        # Grafici ad alta risoluzione (300 DPI) generati per la relazione
 └── master_experiment_summary.csv   # Riepilogo master di tutte le sessioni sperimentali
 ```
