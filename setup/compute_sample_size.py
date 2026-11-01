@@ -194,9 +194,9 @@ def load_csv_columns(csv_path: Path, repetition_filter: Optional[int] = None) ->
     columns: Dict[str, List[float]] = {}
     row_count = 0
     skip_cols = {
-        "task_index", "exp_id", "model_id", "device", "benchmark",
+        "task_index", "sample_id", "exp_id", "model_id", "device", "benchmark",
         "stressor_class", "stressor_method", "num_workers", "size",
-        "duration", "repetition", "timestamp_s"
+        "duration", "repetition", "timestamp_s", "ground_truth", "model_response"
     }
 
     try:

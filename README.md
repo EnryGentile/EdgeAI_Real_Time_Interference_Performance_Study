@@ -63,27 +63,29 @@ Segui questi passaggi per configurare ed eseguire l'intera campagna sperimentale
 
 ---
 
-### FASE 0: Configurazione Connessione e Permessi (PC $\leftrightarrow$ Jetson)
+### FASE 0: Connessione e Permessi con Tailscale (PC $\leftrightarrow$ Jetson)
 
-Poiché la Jetson si trova nella rete del laboratorio e utilizzi il bridge Cloudflare (`cloudflared` su `localhost:2222`), è fondamentale abilitare il canale inverso per l'invio dei file e i permessi di reboot.
+Utilizzando **Tailscale**, la Jetson Orin e il tuo PC Windows risiedono sulla stessa rete privata virtuale mesh:
+- La connessione è **diretta e bidirezionale**: non servono tunnel inversi (`-R`), porte forwarding sul router né servizi a scadenza come Pinggy.
+- Porta SSH standard: **`22`**.
+- L'IP Tailscale del tuo PC Windows è: **`100.92.177.23`** (verificabile con `ipconfig`).
 
-#### 1. Connettiti alla Jetson con Reverse Port Forwarding (`-R 22222:localhost:22`)
-Sul terminale del tuo **PC Windows**, collegati alla Jetson aggiungendo il flag `-R`:
+#### 1. Connettiti alla Jetson tramite Tailscale
+Sul tuo PC Windows, collegati direttamente all'IP Tailscale della Jetson:
 ```bash
-ssh -o NoHostAuthenticationForLocalhost=yes -p 2222 -R 22222:localhost:22 orinagx@127.0.0.1
+ssh orinagx@<JETSON_TAILSCALE_IP>
 ```
-*(Questo comando apre la porta `22222` sulla Jetson, collegandola direttamente al server OpenSSH del tuo PC Windows).*
 
-#### 2. Configura l'autenticazione SSH senza password per l'invio dei file
-Sulla **Jetson**, genera la chiave SSH (se non già presente):
+#### 2. Configura l'autenticazione SSH senza password per l'invio automatico dei dati
+Sulla **Jetson**, genera la coppia di chiavi SSH (se non già presente):
 ```bash
 [ -f ~/.ssh/id_ed25519.pub ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519
 cat ~/.ssh/id_ed25519.pub
 ```
-Copia la chiave pubblica visualizzata e aggiungila nel file `C:\Users\gabri\.ssh\authorized_keys` sul tuo PC Windows.
+Copia la chiave pubblica visualizzata (`ssh-ed25519 AAAAC3...`) e incollala nel file `C:\Users\gabri\.ssh\authorized_keys` sul tuo PC Windows. In questo modo la Jetson potrà inviarti i CSV e i JSON in background senza richiedere password.
 
 #### 3. Abilita il Reboot Automatico senza password per l'utente `orinagx`
-Sulla shell della **Jetson**, esegui questo comando una sola volta per consentire allo script di riavviare la board al termine di ogni run:
+Sulla shell della **Jetson**, esegui una sola volta:
 ```bash
 echo "$USER ALL=(ALL) NOPASSWD: /sbin/reboot, /bin/systemctl reboot" | sudo tee /etc/sudoers.d/orinagx-reboot
 ```
@@ -129,12 +131,12 @@ python3 setup/setup_run.py \
   --benchmark mmlu \
   --no-stressor \
   --samples 40 \
-  --repetitions 3 \
+  --repetitions 1 \
   --transient-wait 90 \
   --reboot \
-  --ssh-target "target" \
-  --ssh-port 22222 \
-  --ssh-dest "path_dest"
+  --ssh-target "gabri@100.92.177.23" \
+  --ssh-port 22 \
+  --ssh-dest "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study"
 ```
 Attendi l'esito: `[SUCCESSO] Configurazione istanziata con successo`.
 
@@ -154,11 +156,11 @@ python3 setup/run_experiments.py \
   --repetitions 1 \
   --transient-wait 90 \
   --no-reboot \
-  --ssh-target "target" \
-  --ssh-port 22222 \
-  --ssh-dest "path_dest"
+  --ssh-target "gabri@100.92.177.23" \
+  --ssh-port 22 \
+  --ssh-dest "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study"
 ```
-*I file `baseline_slm-1b_gpu_mmlu_tasks.csv`, `doe_slm-1b_gpu_mmlu_none.csv`, `responses_*.json` e le time-series verranno trasferiti automaticamente sul tuo PC.*
+*I file `baseline_slm-1b_gpu_mmlu_tasks.csv`, `doe_slm-1b_gpu_mmlu_none.csv`, `responses_*.json` e le time-series verranno trasferiti automaticamente sul tuo PC via Tailscale.*
 
 ---
 
@@ -172,17 +174,26 @@ python3 setup/compute_sample_size.py \
   --device gpu \
   --benchmark mmlu \
   --confidence 0.95 \
-  --error 0.05
+  --error 0.05 \
+  --update-config
 ```
-*Lo script analizzerà le metriche per-token (`per_token_lat_ms`, `throughput_tok_s`) e restituirà il valore di $n$ da utilizzare nella fase successiva (es. $n = 15$).*
+*Il flag `--update-config` aggiorna automaticamente `sample_count` nel file `setup/run_config.json` con il valore di $n$ calcolato (es. $n = 15$).*
 
 ---
 
-### FASE 5: Esecuzione della Campagna DoE con Stressor (`stress-ng`)
+### FASE 5: Automazione Headless e Avvio Campagna DoE con Stressor
 
-Lancia la matrice sperimentale dello stressor scelto (es. `cpu`, `mem`, `io`, `cache`, `sched`, `interrupt`).
+Per consentire alla Jetson di eseguire tutti i run (12 per stressor 2D, 36 per stressor 3D) con reboot automatici senza dover intervenire manualmente dopo ogni riavvio:
 
-#### Esempio: Stressor CPU (DoE 2D: 12 run totali)
+#### 1. Abilita l'avvio automatico al boot con systemd (una sola volta)
+Sulla Jetson, esegui il nostro script di supporto:
+```bash
+bash setup/setup_autostart.sh enable
+```
+*Questo comando crea e attiva un servizio di sistema (`edgeai-doe.service`) configurato per attendere che la rete e `tailscaled` siano online, eseguire l'esperimento successivo, inviare i dati sul PC e riavviare la board.*
+
+#### 2. Inizializza e lancia la campagna sperimentale
+Configura e avvia la campagna con lo stressor scelto (es. `cpu`):
 ```bash
 python3 setup/run_experiments.py \
   --model slm \
@@ -190,43 +201,29 @@ python3 setup/run_experiments.py \
   --benchmark mmlu \
   --use-stressor \
   --stressor cpu \
-  --samples <N_CALCOLATO> \
   --repetitions 3 \
   --transient-wait 90 \
   --reboot \
-  --ssh-target "target" \
-  --ssh-port 22222 \
-  --ssh-dest "path_dest"
-```
-
-#### Esempio: Stressor Memoria (DoE 3D: 36 run totali)
-```bash
-python3 setup/run_experiments.py \
-  --model slm \
-  --device gpu \
-  --benchmark mmlu \
-  --use-stressor \
-  --stressor mem \
-  --samples <N_CALCOLATO> \
-  --repetitions 3 \
-  --transient-wait 90 \
-  --reboot \
-  --ssh-target "gabri@localhost" \
-  --ssh-port 22222 \
+  --ssh-target "gabri@100.92.177.23" \
+  --ssh-port 22 \
   --ssh-dest "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study"
 ```
+*Dopo la prima run, la Jetson si riavvierà e proseguirà in **completa autonomia** fino a completare tutti i run.*
 
-#### Come gestire l'avanzamento tra i reboot
-Poiché al riavvio la sessione SSH interattiva cade, hai due modalità:
-1. **Riconnessione Manuale**: dopo ogni riavvio (~45 secondi), riconnettiti con `ssh -p 2222 -R 22222:localhost:22 ...` e rilancia `python3 setup/run_experiments.py`. Lo script leggerà `experiment_state.json` e riprenderà automaticamente dal run successivo.
-2. **Esecuzione Headless con Crontab**: per far ripartire lo script da solo al boot:
-   ```bash
-   crontab -e
-   ```
-   Aggiungi in coda:
-   ```bash
-   @reboot sleep 20 && cd /home/orinagx/EdgeAI_Real_Time_Interference_Performance_Study && /usr/bin/python3 setup/run_experiments.py --reboot >> autostart_doe.log 2>&1
-   ```
+#### 3. Monitoraggio Headless
+In qualsiasi momento puoi collegarti via Tailscale e controllare l'avanzamento senza interrompere il processo:
+- **Seguire il log in tempo reale**:
+  ```bash
+  tail -f headless_doe.log
+  ```
+- **Verificare lo stato della coda**:
+  ```bash
+  python3 setup/run_experiments.py --status
+  ```
+- **Disabilitare l'avvio automatico a fine campagna**:
+  ```bash
+  bash setup/setup_autostart.sh disable
+  ```
 
 ---
 

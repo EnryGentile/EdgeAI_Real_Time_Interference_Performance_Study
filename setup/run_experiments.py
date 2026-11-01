@@ -935,7 +935,14 @@ def send_files_via_ssh(
 
         remote_subdirs = sorted({rel_dir for _, rel_dir in valid_items if rel_dir})
         remote_dirs_to_create = [ssh_dest] + [f"{ssh_dest}/{d}" for d in remote_subdirs]
-        mkdir_cmd_str = "mkdir -p " + " ".join(f'"{d}"' for d in remote_dirs_to_create)
+
+        # Rilevamento sistema host di destinazione (Windows con drive letter C:/... vs Linux /...)
+        is_windows_dest = bool(re.match(r"^[a-zA-Z]:", ssh_dest)) or ("\\" in ssh_dest)
+        if is_windows_dest:
+            win_dirs = [d.replace("/", "\\") for d in remote_dirs_to_create]
+            mkdir_cmd_str = "cmd.exe /c \"" + " & ".join(f'if not exist "{d}" mkdir "{d}"' for d in win_dirs) + "\""
+        else:
+            mkdir_cmd_str = "mkdir -p " + " ".join(f'"{d}"' for d in remote_dirs_to_create)
 
         ssh_cmd = ["ssh"] + _build_ssh_base_opts(ssh_port, ssh_key, is_scp=False) + [ssh_target, mkdir_cmd_str]
         subprocess.run(ssh_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
@@ -1684,9 +1691,12 @@ def main():
             if config.get("reboot_after_run", True):
                 if pending:
                     print(f" [PROSSIMO AL RIAVVIO] -> {pending[0]['exp_id']}")
+                    trigger_board_reboot()
                 else:
-                    print(" [FINITO] Questo era l'ultimo esperimento della coda. Riavvio finale di pulizia.")
-                trigger_board_reboot()
+                    print("\n" + "=" * 65)
+                    print(" [FINITO] Tutti gli esperimenti della coda sono stati completati con successo!")
+                    print("          Nessun ulteriore riavvio necessario. Campagna DoE terminata.")
+                    print("=" * 65 + "\n")
             else:
                 print(" [INFO] Reboot disattivato da configurazione (reboot_after_run=False).")
 
