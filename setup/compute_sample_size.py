@@ -24,7 +24,7 @@ import argparse
 import traceback
 import statistics
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -43,20 +43,21 @@ Z_TABLE = {
     0.99: 2.5758,
 }
 
-# Metriche normalizzate per token (strettamente IID rispetto alla lunghezza variabile delle domande)
-PRIMARY_IID_METRICS = [
+# Metriche target del modello per il dimensionamento del campione (CLT):
+# TTFT (Time To First Token), TPOT (Time Per Output Token), Throughput (token/s).
+# La durata totale del task NON viene usata per dimensionare n poiché dipende
+# arbitrariamente dal numero di token generati da ciascuna risposta specifica.
+TARGET_LLM_METRICS = [
+    "ttft_ms",
     "per_token_lat_ms",
     "throughput_tok_s",
-    "prompt_ms_per_tok",
 ]
 
-ALL_LLM_METRICS = [
-    "per_token_lat_ms",
-    "throughput_tok_s",
-    "prompt_ms_per_tok",
-    "ttft_ms",
-    "jitter_ms",
-]
+METRIC_LABELS = {
+    "ttft_ms": "TTFT (Time To First Token) [ms]",
+    "per_token_lat_ms": "TPOT (Time Per Output Token) [ms]",
+    "throughput_tok_s": "Throughput [tok/s]",
+}
 
 
 def log_error(context: str, exc: BaseException):
@@ -189,15 +190,27 @@ def resolve_baseline_csv(
     sys.exit(1)
 
 
-def load_csv_columns(csv_path: Path, repetition_filter: Optional[int] = None) -> Tuple[int, Dict[str, List[float]]]:
-    """Carica tutte le colonne numeriche dal CSV della baseline ignorando eventuali righe corrotte."""
-    columns: Dict[str, List[float]] = {}
-    row_count = 0
+def load_csv_columns(
+    csv_path: Path,
+    repetition_filter: Optional[int] = None,
+    aggregate_mode: str = "median",
+    warmup_drop: int = 3
+) -> Tuple[int, Dict[str, List[float]], Dict[str, Any]]:
+    """
+    Carica le colonne numeriche dal CSV della baseline.
+    Se sono presenti ripetizioni multiple (es. rep 1, 2, 3 per gli stessi 40 compiti)
+    e non è specificato repetition_filter, aggrega i valori di ogni singolo task
+    tramite la 'median' (default) o 'mean' per eliminare il rumore inter-run e gli outlier.
+    Se warmup_drop > 0, esclude i primi compiti di cold-start hardware per valutare lo steady-state.
+    """
     skip_cols = {
         "task_index", "sample_id", "exp_id", "model_id", "device", "benchmark",
         "stressor_class", "stressor_method", "num_workers", "size",
         "duration", "repetition", "timestamp_s", "ground_truth", "model_response"
     }
+
+    raw_rows: List[Dict[str, Any]] = []
+    repetitions_seen = set()
 
     try:
         with open(csv_path, "r", encoding="utf-8") as f:
@@ -205,28 +218,89 @@ def load_csv_columns(csv_path: Path, repetition_filter: Optional[int] = None) ->
             for row in reader:
                 if not row:
                     continue
-                if repetition_filter is not None and "repetition" in row:
+                if "repetition" in row and row["repetition"]:
                     try:
-                        if int(row["repetition"]) != repetition_filter:
+                        rep_val = int(row["repetition"])
+                        repetitions_seen.add(rep_val)
+                        if repetition_filter is not None and rep_val != repetition_filter:
                             continue
                     except ValueError:
                         pass
-
-                row_count += 1
-                for k, val_str in row.items():
-                    if k is None or k in skip_cols or val_str is None:
-                        continue
-                    try:
-                        val = float(val_str)
-                        if math.isfinite(val):
-                            columns.setdefault(k, []).append(val)
-                    except (ValueError, TypeError):
-                        continue
+                elif repetition_filter is not None:
+                    continue
+                raw_rows.append(row)
     except Exception as e:
-        log_error("load_csv_columns", e)
+        log_error("load_csv_columns_read", e)
         raise RuntimeError(f"Impossibile leggere il file CSV {csv_path}: {e}") from e
 
-    return row_count, columns
+    num_reps = len(repetitions_seen) if repetitions_seen else 1
+    do_aggregation = (repetition_filter is None and num_reps > 1 and aggregate_mode in ("median", "mean"))
+
+    columns: Dict[str, List[float]] = {}
+    meta: Dict[str, Any] = {
+        "raw_rows": len(raw_rows),
+        "repetitions_detected": num_reps,
+        "aggregate_applied": aggregate_mode if do_aggregation else "none",
+        "warmup_discarded": 0,
+    }
+
+    if do_aggregation:
+        # Raggruppamento per ID del task (sample_id o task_index)
+        grouped_by_sample: Dict[str, Dict[str, List[float]]] = {}
+        for r in raw_rows:
+            s_id = r.get("sample_id") or r.get("task_index") or str(len(grouped_by_sample) + 1)
+            sample_dict = grouped_by_sample.setdefault(s_id, {})
+            for k, val_str in r.items():
+                if k is None or k in skip_cols or val_str is None:
+                    continue
+                try:
+                    val = float(val_str)
+                    if math.isfinite(val):
+                        sample_dict.setdefault(k, []).append(val)
+                except (ValueError, TypeError):
+                    continue
+
+        # Esclusione del transitorio iniziale di warmup (cold-start)
+        if warmup_drop > 0 and len(grouped_by_sample) > warmup_drop:
+            sorted_keys = sorted(
+                grouped_by_sample.keys(),
+                key=lambda x: int(x) if str(x).isdigit() else str(x)
+            )
+            for k in sorted_keys[:warmup_drop]:
+                del grouped_by_sample[k]
+            meta["warmup_discarded"] = warmup_drop
+
+        effective_count = len(grouped_by_sample)
+        meta["effective_samples"] = effective_count
+
+        for s_id, metrics in grouped_by_sample.items():
+            for k, vals in metrics.items():
+                if not vals:
+                    continue
+                agg_val = statistics.median(vals) if aggregate_mode == "median" else statistics.mean(vals)
+                columns.setdefault(k, []).append(agg_val)
+
+        return effective_count, columns, meta
+
+    # Modalità raw senza aggregazione (es. singola ripetizione o aggregazione disattivata)
+    if warmup_drop > 0 and len(raw_rows) > warmup_drop:
+        raw_rows = raw_rows[warmup_drop:]
+        meta["warmup_discarded"] = warmup_drop
+
+    for r in raw_rows:
+        for k, val_str in r.items():
+            if k is None or k in skip_cols or val_str is None:
+                continue
+            try:
+                val = float(val_str)
+                if math.isfinite(val):
+                    columns.setdefault(k, []).append(val)
+            except (ValueError, TypeError):
+                continue
+
+    effective_count = len(raw_rows)
+    meta["effective_samples"] = effective_count
+    return effective_count, columns, meta
 
 
 def update_run_config_safely(recommended_n: int):
@@ -294,6 +368,19 @@ def parse_args():
         help="Filtra una specifica ripetizione della baseline (es. 1 per valutare solo i primi 40 campioni)"
     )
     parser.add_argument(
+        "--aggregate",
+        type=str,
+        choices=["median", "mean", "none"],
+        default="median",
+        help="Metodo di aggregazione per le ripetizioni multiple dello stesso task (default: 'median' per de-noising robusto agli outlier)"
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=3,
+        help="Numero di compiti iniziali di cold-start hardware da escludere per valutare lo steady-state (default: 3)"
+    )
+    parser.add_argument(
         "--update-config",
         action="store_true",
         default=False,
@@ -314,20 +401,36 @@ def main():
 
         z_val = get_z_value(conf)
         csv_path = resolve_baseline_csv(args.csv, args.model, args.device, args.benchmark)
-        n_0, cols = load_csv_columns(csv_path, repetition_filter=args.repetition)
+        n_0, cols, meta = load_csv_columns(
+            csv_path,
+            repetition_filter=args.repetition,
+            aggregate_mode=args.aggregate,
+            warmup_drop=args.warmup
+        )
 
         if n_0 < 2 or not cols:
             raise ValueError(
                 f"Il file {csv_path} contiene troppi pochi campioni validi (n_0={n_0}) per calcolare la deviazione standard."
             )
 
+        agg_desc = (
+            f"mediana per-task su {meta['repetitions_detected']} ripetizioni (de-noising outlier)"
+            if meta["aggregate_applied"] == "median"
+            else (f"media per-task su {meta['repetitions_detected']} ripetizioni" if meta["aggregate_applied"] == "mean" else f"nessuna ({meta['raw_rows']} righe totali)")
+        )
+
+        warm_msg = f" [esclusi {meta['warmup_discarded']} task iniziali di warmup/cold-start]" if meta.get("warmup_discarded") else ""
+
         print("\n" + "=" * 78)
         print(" CALCOLO DIMENSIONAMENTO CAMPIONE (CLT + Z-TABLE) PER IL PIANO FATTORIALE")
         print("=" * 78)
         print(f" * File Baseline analizzato : {csv_path}")
-        print(f" * Campioni Baseline (n_0)  : {n_0} {'[OK >= 30: Teorema del Limite Centrale valido]' if n_0 >= 30 else '[WARNING < 30: consigliati almeno 30-40 campioni]'}")
+        print(f" * Compiti Baseline (n_0)   : {n_0} prompt a regime ({meta['raw_rows']} record totali{warm_msg})")
+        print(f" * Aggregazione Ripetizioni : {agg_desc}")
+        print(f" * Teorema Limite Centrale  : {'[OK >= 30 campioni: CLT valido]' if n_0 >= 30 else '[WARNING < 30 campioni: raccomandati >= 30]'}")
         print(f" * Intervallo di Confidenza : {conf * 100:.1f}% (alpha = {1.0 - conf:.3f} -> z_{{1-alpha/2}} = {z_val:.4f})")
         print(f" * Errore Relativo Massimo  : {err * 100:.1f}% (r = {err:.4f})")
+        print(f" * Metriche di Riferimento  : TTFT, TPOT (Latenza per-token) e Throughput (esclusa durata)")
         print(f" * Formula applicata        : n = ceil( ( ({z_val:.2f} * s_0) / ({err:.2f} * x_bar_0) )^2 )")
         print("=" * 78)
 
@@ -337,53 +440,34 @@ def main():
             if res is not None:
                 results_summary[col_name] = res
 
-        print("\n1. METRICHE DEL MODELLO (llama.cpp):")
-        print(f" {'Metrica':<24s} | {'n_0':>5s} | {'Media (x_bar)':>14s} | {'Dev.Std (s_0)':>14s} | {'CV (%)':>8s} | {'n calcolato':>11s}")
-        print("-" * 88)
+        print("\n1. METRICHE INTRINSECHE DEL MODELLO LLM (Dimensionamento campioni n):")
+        print(f" {'Metrica':<36s} | {'n_0':>5s} | {'Media (x_bar)':>14s} | {'Dev.Std (s_0)':>14s} | {'CV (%)':>8s} | {'n calcolato':>11s}")
+        print("-" * 102)
 
-        iid_n_candidates = []
-        all_llm_n_candidates = []
+        target_n_candidates = []
 
-        for m in ALL_LLM_METRICS:
+        for m in TARGET_LLM_METRICS:
             if m in results_summary:
                 r = results_summary[m]
-                tag = " *" if m in PRIMARY_IID_METRICS else "  "
+                label = METRIC_LABELS.get(m, m)
                 print(
-                    f" {m + tag:<24s} | {r['n_0']:5d} | {r['mean']:14.4f} | "
+                    f" {label:<36s} | {r['n_0']:5d} | {r['mean']:14.4f} | "
                     f"{r['stdev']:14.4f} | {r['cv_pct']:7.2f}% | {r['n_required']:11d}"
                 )
-                all_llm_n_candidates.append(r["n_required"])
-                if m in PRIMARY_IID_METRICS:
-                    iid_n_candidates.append(r["n_required"])
+                target_n_candidates.append(r["n_required"])
 
-        vmstat_cols = [
-            c for c in results_summary.keys()
-            if c.startswith("vmstat_") or c in ("us", "sy", "id", "wa", "r", "cs", "in", "free_kb", "cpu_temp_c", "gpu_temp_c")
-        ]
-        if vmstat_cols:
-            print("\n2. METRICHE DI SISTEMA PRINCIPALI (vmstat / sensori):")
-            print(f" {'Metrica':<24s} | {'n_0':>5s} | {'Media (x_bar)':>14s} | {'Dev.Std (s_0)':>14s} | {'CV (%)':>8s} | {'n calcolato':>11s}")
-            print("-" * 88)
-            for vc in vmstat_cols:
-                r = results_summary[vc]
-                if r["mean"] > 0:
-                    print(
-                        f" {vc:<24s} | {r['n_0']:5d} | {r['mean']:14.4f} | "
-                        f"{r['stdev']:14.4f} | {r['cv_pct']:7.2f}% | {r['n_required']:11d}"
-                    )
-
-        if iid_n_candidates:
-            recommended_raw = max(iid_n_candidates)
-        elif all_llm_n_candidates:
-            recommended_raw = max(all_llm_n_candidates)
+        if target_n_candidates:
+            recommended_raw = max(target_n_candidates)
+            basis_str = "Massimo tra le 3 metriche core (TTFT, TPOT, Throughput)"
         else:
-            recommended_raw = max((r["n_required"] for r in results_summary.values()), default=10)
+            recommended_raw = 10
+            basis_str = "Fallback standard"
 
         recommended_n = max(max(1, args.min_samples), recommended_raw)
 
         print("\n" + "=" * 78)
         print(f" -> NUMERO DI CAMPIONI CONSIGLIATO PER GLI STRESSOR: n = {recommended_n}")
-        print(f"    (Calcolato sulle metriche IID normalizzate per token [*], min_samples={args.min_samples})")
+        print(f"    (Calcolato su: {basis_str}, confidenza {conf*100:.0f}%, errore {err*100:.0f}%, min_samples={args.min_samples})")
         print("=" * 78)
 
         if args.update_config:

@@ -131,7 +131,7 @@ python3 setup/setup_run.py \
   --benchmark mmlu \
   --no-stressor \
   --samples 40 \
-  --repetitions 1 \
+  --repetitions 3 \
   --transient-wait 90 \
   --reboot \
   --ssh-target "gabri@100.92.177.23" \
@@ -153,9 +153,9 @@ python3 setup/run_experiments.py \
   --benchmark mmlu \
   --no-stressor \
   --samples 40 \
-  --repetitions 1 \
+  --repetitions 3 \
   --transient-wait 90 \
-  --no-reboot \
+  --reboot \
   --ssh-target "gabri@100.92.177.23" \
   --ssh-port 22 \
   --ssh-dest "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study"
@@ -168,6 +168,9 @@ python3 setup/run_experiments.py \
 
 Esegui lo script per calcolare analiticamente il numero minimo di campioni necessari ($n$) per garantire un **intervallo di confidenza al 95%** ($z = 1.96$) con un **errore massimo del 5%** ($r = 0.05$):
 
+* Lo script raggruppa automaticamente per singolo prompt i dati delle 3 ripetizioni della baseline, ne estrae la **mediana** (de-noising dagli outlier) e genera il file pulito `results/baseline_slm-1b_gpu_mmlu_tasks_median.csv`.
+* Il dimensionamento di $n$ è calcolato **esclusivamente sulle metriche chiave del modello**: **TTFT** (fase di prefill), **TPOT** (latenza per-token nella fase di decode) e **Throughput** (token/s), escludendo la durata totale che dipende dal numero arbitrario di token generati.
+
 ```bash
 python3 setup/compute_sample_size.py \
   --model slm \
@@ -177,7 +180,7 @@ python3 setup/compute_sample_size.py \
   --error 0.05 \
   --update-config
 ```
-*Il flag `--update-config` aggiorna automaticamente `sample_count` nel file `setup/run_config.json` con il valore di $n$ calcolato (es. $n = 15$).*
+*Il flag `--update-config` aggiorna automaticamente `sample_count` nel file `setup/run_config.json` con il valore di $n$ calcolato.*
 
 ---
 
