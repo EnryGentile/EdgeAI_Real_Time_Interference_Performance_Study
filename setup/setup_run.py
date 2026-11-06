@@ -16,6 +16,7 @@ fallback GPU -> CPU se l'acceleratore non è disponibile, scrittura atomica con 
 """
 
 import os
+import re
 import sys
 import json
 import shutil
@@ -100,74 +101,94 @@ KNOWN_STRESSORS = {
     "none": {
         "class": "none",
         "has_size_factor": False,
-        "description": "Nessuno stressor (Baseline a riposo)"
+        "description": "Nessuno stressor (Baseline a riposo)",
+        "methods": ["none"]
     },
     "cpu": {
         "class": "cpu",
         "has_size_factor": False,
-        "default_method": "cpu",
         "methods": ["cpu", "matrix", "fft"],
-        "description": "Stressor CPU (compute-bound: cpu, matrix, fft)"
+        "description": "Famiglia Stressor CPU (compute-bound: cpu, matrix, fft eseguiti simultaneamente)"
     },
     "mem": {
         "class": "mem",
         "has_size_factor": True,
-        "default_method": "vm",
-        "methods": ["vm", "stream", "memrate"],
-        "description": "Stressor Memoria (DRAM bandwidth/allocazione: vm, stream, memrate)"
+        "methods": ["vm", "stream", "mem_rate"],
+        "description": "Famiglia Stressor Memoria 3D (vm, stream, mem_rate simultanei con size S)"
     },
     "cache": {
         "class": "cache",
         "has_size_factor": False,
-        "default_method": "cache",
-        "methods": ["cache", "l1cache"],
-        "description": "Stressor Cache gerarchica (cache, l1cache)"
+        "methods": ["cache", "l1-cache", "llc-affinity"],
+        "description": "Famiglia Stressor Cache (cache, l1-cache, llc-affinity se livelli > 2)"
     },
     "io": {
         "class": "io",
         "has_size_factor": True,
-        "default_method": "iomix",
         "methods": ["iomix", "hdd"],
-        "description": "Stressor I/O e filesystem (iomix, hdd)"
+        "description": "Famiglia Stressor I/O 3D (iomix, hdd simultanei con size S)"
     },
-    "sched": {
-        "class": "sched",
+    "os": {
+        "class": "os",
         "has_size_factor": False,
-        "default_method": "switch",
-        "methods": ["switch", "fork", "sched"],
-        "description": "Stressor Scheduler/OS (switch, fork)"
+        "methods": ["sched", "fork", "switch"],
+        "description": "Famiglia Stressor OS/Scheduler (sched, fork, switch eseguiti simultaneamente)"
     },
     "interrupt": {
         "class": "interrupt",
         "has_size_factor": False,
-        "default_method": "timer",
         "methods": ["timer", "sigq"],
-        "description": "Stressor Interrupt (timer, sigq)"
+        "description": "Famiglia Stressor Interrupt (timer, sigq eseguiti simultaneamente)"
+    },
+    "all-stressor": {
+        "class": "all-stressor",
+        "has_size_factor": True,
+        "methods": ["all"],
+        "description": "Tutte le 6 famiglie di stressor in sequenza (cpu -> mem -> cache -> io -> os -> interrupt, 120 run totali)"
     }
 }
 
+STRESSOR_FAMILY_ORDER = ["cpu", "mem", "cache", "io", "os", "interrupt"]
+
 STRESSOR_ALIASES = {
-    "none": ("none", "none"),
-    "baseline": ("none", "none"),
-    "cpu": ("cpu", "cpu"),
-    "matrix": ("cpu", "matrix"),
-    "fft": ("cpu", "fft"),
-    "mem": ("mem", "vm"),
-    "memory": ("mem", "vm"),
-    "vm": ("mem", "vm"),
-    "stream": ("mem", "stream"),
-    "memrate": ("mem", "memrate"),
-    "cache": ("cache", "cache"),
-    "l1cache": ("cache", "l1cache"),
-    "io": ("io", "iomix"),
-    "iomix": ("io", "iomix"),
-    "hdd": ("io", "hdd"),
-    "sched": ("sched", "switch"),
-    "switch": ("sched", "switch"),
-    "fork": ("sched", "fork"),
-    "interrupt": ("interrupt", "timer"),
-    "timer": ("interrupt", "timer"),
-    "sigq": ("interrupt", "sigq"),
+    "none": "none",
+    "baseline": "none",
+    "off": "none",
+    "false": "none",
+    "cpu": "cpu",
+    "matrix": "cpu",
+    "fft": "cpu",
+    "mem": "mem",
+    "memoria": "mem",
+    "memory": "mem",
+    "vm": "mem",
+    "stream": "mem",
+    "memrate": "mem",
+    "mem_rate": "mem",
+    "cache": "cache",
+    "l1cache": "cache",
+    "l1-cache": "cache",
+    "llc-affinity": "cache",
+    "llc_affinity": "cache",
+    "io": "io",
+    "i/o": "io",
+    "iomix": "io",
+    "hdd": "io",
+    "os": "os",
+    "sched": "os",
+    "scheduler": "os",
+    "switch": "os",
+    "fork": "os",
+    "interrupt": "interrupt",
+    "interrupts": "interrupt",
+    "irq": "interrupt",
+    "timer": "interrupt",
+    "sigq": "interrupt",
+    "all": "all-stressor",
+    "all-stressor": "all-stressor",
+    "all-stressors": "all-stressor",
+    "all_stressor": "all-stressor",
+    "all_stressors": "all-stressor",
 }
 
 
@@ -201,6 +222,8 @@ class RunConfig:
     max_tokens: int
     n_threads: int
     example_cmd: List[str]
+    stressor_methods: Optional[List[str]] = None
+    no_ssh: bool = False
 
 
 def log_runtime_error(context: str, exc: Exception):
@@ -458,24 +481,140 @@ def check_system_prerequisites(
 # ==============================================================================
 # ISTANZIAZIONE DELLA CONFIGURAZIONE CON SCRITTURA ATOMICA E BACKUP
 # ==============================================================================
+def get_hardware_cache_info() -> Dict[str, Any]:
+    """
+    Rileva le dimensioni e i livelli di cache hardware del sistema (L1, L2, L3/LLC) in KB.
+    Su NVIDIA Jetson AGX Orin (Cortex-A78AE):
+      - L1: 64 KB (d-cache)
+      - L2: 512 KB
+      - L3/LLC: 32768 KB (32 MB)
+      - max_level: 3
+    Legge dinamicamente da /sys/devices/system/cpu/cpu0/cache/index* o lscpu, con fallback difensivo.
+    """
+    cache_info = {
+        "max_level": 3,
+        "l1_kb": 64,
+        "l2_kb": 512,
+        "l3_kb": 32768,
+    }
+    sysfs_cache = Path("/sys/devices/system/cpu/cpu0/cache")
+    if sysfs_cache.exists():
+        try:
+            levels_found = set()
+            for idx_dir in sysfs_cache.glob("index*"):
+                lvl_file = idx_dir / "level"
+                sz_file = idx_dir / "size"
+                if lvl_file.exists() and sz_file.exists():
+                    lvl_str = lvl_file.read_text(encoding="utf-8").strip()
+                    sz_str = sz_file.read_text(encoding="utf-8").strip()
+                    if lvl_str.isdigit():
+                        lvl = int(lvl_str)
+                        levels_found.add(lvl)
+                        sz_kb = 0
+                        m = re.match(r"^(\d+)\s*([KkMmGg])?B?", sz_str)
+                        if m:
+                            val = int(m.group(1))
+                            unit = (m.group(2) or "K").upper()
+                            if unit == "K":
+                                sz_kb = val
+                            elif unit == "M":
+                                sz_kb = val * 1024
+                            elif unit == "G":
+                                sz_kb = val * 1024 * 1024
+                            else:
+                                sz_kb = val
+                        if sz_kb > 0:
+                            if lvl == 1:
+                                cache_info["l1_kb"] = sz_kb
+                            elif lvl == 2:
+                                cache_info["l2_kb"] = sz_kb
+                            elif lvl >= 3:
+                                cache_info["l3_kb"] = sz_kb
+            if levels_found:
+                cache_info["max_level"] = max(levels_found)
+                return cache_info
+        except Exception:
+            pass
+
+    try:
+        res = subprocess.run(["lscpu"], capture_output=True, text=True, timeout=5, check=False)
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                m_l1 = re.search(r"L1d cache:\s*(\d+)\s*([KkMm])i?B", line, re.IGNORECASE)
+                if m_l1:
+                    v = int(m_l1.group(1))
+                    u = m_l1.group(2).upper()
+                    cache_info["l1_kb"] = v * 1024 if u == "M" else v
+                m_l2 = re.search(r"L2 cache:\s*(\d+)\s*([KkMm])i?B", line, re.IGNORECASE)
+                if m_l2:
+                    v = int(m_l2.group(1))
+                    u = m_l2.group(2).upper()
+                    cache_info["l2_kb"] = v * 1024 if u == "M" else v
+                m_l3 = re.search(r"L3 cache:\s*(\d+)\s*([KkMm])i?B", line, re.IGNORECASE)
+                if m_l3:
+                    v = int(m_l3.group(1))
+                    u = m_l3.group(2).upper()
+                    cache_info["l3_kb"] = v * 1024 if u == "M" else v
+                    cache_info["max_level"] = 3
+    except Exception:
+        pass
+
+    return cache_info
+
+
+def get_cpu_cache_levels() -> int:
+    """Rileva il numero di livelli di cache hardware presenti sulla CPU (L1, L2, L3/LLC)."""
+    return get_hardware_cache_info()["max_level"]
+
+
+def get_methods_for_class(s_class: str) -> List[str]:
+    """Restituisce i metodi da eseguire per ciascuna classe di stressor."""
+    c = s_class.strip().lower()
+    if c == "cpu":
+        return ["cpu", "matrix", "fft"]
+    elif c in ("mem", "memoria", "memory"):
+        return ["vm", "stream", "mem_rate"]
+    elif c == "cache":
+        methods = ["cache", "l1-cache"]
+        if get_cpu_cache_levels() > 2:
+            methods.append("llc-affinity")
+        return methods
+    elif c in ("io", "i/o", "disk"):
+        return ["iomix", "hdd"]
+    elif c in ("os", "sched", "scheduler", "sistema"):
+        return ["sched", "fork", "switch"]
+    elif c in ("interrupt", "interrupts", "irq"):
+        return ["timer", "sigq"]
+    return [c]
+
+
 def resolve_stressor(use_stressor: bool, stressor_input: Optional[str]):
-    """Risolve la classe e il metodo dello stressor in base ai flag utente."""
+    """Risolve la classe e i metodi dello stressor in base ai flag utente."""
     if not use_stressor:
-        return False, "none", "none", False
+        return False, "none", "none", False, ["none"]
 
     s_clean = (stressor_input or "cpu").strip().lower()
     if s_clean in ["none", "baseline", "off", "false"]:
-        return False, "none", "none", False
+        return False, "none", "none", False, ["none"]
+
+    if s_clean in ("all", "all-stressor", "all-stressors", "all_stressor", "all_stressors"):
+        s_class = "all-stressor"
+        all_methods = []
+        for fam in STRESSOR_FAMILY_ORDER:
+            all_methods.extend(get_methods_for_class(fam))
+        return True, s_class, "all", True, all_methods
 
     if s_clean not in STRESSOR_ALIASES:
-        valid_opts = [k for k in STRESSOR_ALIASES.keys() if k not in ("none", "baseline")]
+        valid_opts = [k for k in STRESSOR_ALIASES.keys() if k not in ("none", "baseline", "off", "false")]
         print(f"[WARNING] Stressor '{stressor_input}' non riconosciuto. Scelte valide: {valid_opts}")
-        print("[FALLBACK] Ripiego automatico sullo stressor di default 'cpu'.")
+        print("[FALLBACK] Ripiego automatico sulla classe di default 'cpu'.")
         s_clean = "cpu"
 
-    s_class, s_method = STRESSOR_ALIASES[s_clean]
-    has_size = KNOWN_STRESSORS[s_class]["has_size_factor"]
-    return True, s_class, s_method, has_size
+    s_class = STRESSOR_ALIASES[s_clean]
+    methods = get_methods_for_class(s_class)
+    s_method = "+".join(methods)
+    has_size = s_class in ("mem", "io")
+    return True, s_class, s_method, has_size, methods
 
 
 def save_config_safely(config: RunConfig):
@@ -513,7 +652,8 @@ def instantiate_run(
     ssh_port: int = 22,
     ssh_key: Optional[str] = None,
     threads: Optional[int] = None,
-    seed: int = 42
+    seed: int = 42,
+    no_ssh: bool = False
 ) -> RunConfig:
     """
     Valida gli argomenti, esegue i check e istanzia la configurazione di esecuzione.
@@ -542,7 +682,7 @@ def instantiate_run(
             b_clean = "mmlu"
 
         # 4. Risoluzione Stressor
-        use_stressor_resolved, s_class, s_method, has_size_factor = resolve_stressor(use_stressor, stressor_input)
+        use_stressor_resolved, s_class, s_method, has_size_factor, s_methods = resolve_stressor(use_stressor, stressor_input)
 
         # 5. Determinazione numero di campioni (task) e ripetizioni
         sample_count = samples if (samples is not None and samples > 0) else 40
@@ -612,7 +752,9 @@ def instantiate_run(
             temperature=temperature,
             max_tokens=max_tokens,
             n_threads=n_threads,
-            example_cmd=example_cmd
+            example_cmd=example_cmd,
+            stressor_methods=s_methods,
+            no_ssh=no_ssh
         )
 
         save_config_safely(config)
@@ -697,9 +839,16 @@ def parse_arguments():
         type=str,
         default=None,
         help=(
-            "Quale stressor utilizzare: 'none' (baseline), classe ('cpu', 'mem', 'io', 'cache', 'sched', 'interrupt') "
-            "o metodo specifico ('matrix', 'fft', 'vm', 'stream', 'memrate', 'l1cache', 'iomix', 'hdd', 'switch', 'fork', 'timer', 'sigq')"
+            "Quale stressor utilizzare: 'none' (baseline), classe ('cpu', 'mem', 'cache', 'io', 'os', 'interrupt', 'all-stressor') "
+            "oppure metodo/alias specifico. L'esecuzione avverrà sull'intera classe di appartenenza dello stressor."
         )
+    )
+    parser.add_argument(
+        "--all-stressor", "--all-stressors",
+        dest="all_stressor",
+        action="store_true",
+        default=False,
+        help="Esegue tutte le famiglie di stressor in sequenza (cpu -> mem -> cache -> io -> os -> interrupt)"
     )
     parser.add_argument(
         "-n", "--samples",
@@ -763,6 +912,12 @@ def parse_arguments():
         default=None,
         help="Numero di thread CPU da dedicare a llama.cpp (default: core disponibili)"
     )
+    parser.add_argument(
+        "--no-ssh",
+        action="store_true",
+        default=False,
+        help="Disabilita l'invio dei file dei risultati via SSH/SCP al termine degli esperimenti"
+    )
 
     args = parser.parse_args()
 
@@ -779,28 +934,34 @@ def parse_arguments():
         print("  python setup/setup_run.py --model slm --device gpu --benchmark mmlu --use-stressor --stressor mem --samples 12")
         sys.exit(1)
 
+    stressor_choice = "all-stressor" if args.all_stressor else args.stressor
     use_stressor = args.use_stressor
-    if use_stressor is None:
-        if args.stressor is not None and args.stressor.strip().lower() not in ["none", "baseline", "off", "false"]:
+    if args.all_stressor:
+        use_stressor = True
+    elif use_stressor is None:
+        if stressor_choice is not None and stressor_choice.strip().lower() not in ["none", "baseline", "off", "false"]:
             use_stressor = True
         else:
             use_stressor = False
+
+    ssh_target = None if args.no_ssh else args.ssh_target
 
     return (
         model,
         device,
         benchmark,
         use_stressor,
-        args.stressor,
+        stressor_choice,
         args.samples,
         args.repetitions,
         args.transient_wait,
         True if args.reboot is None else args.reboot,
-        args.ssh_target,
+        ssh_target,
         args.ssh_dest,
         args.ssh_port,
         args.ssh_key,
-        args.threads
+        args.threads,
+        args.no_ssh
     )
 
 
@@ -820,7 +981,8 @@ def main():
             ssh_dest_arg,
             ssh_port_arg,
             ssh_key_arg,
-            threads_arg
+            threads_arg,
+            no_ssh_arg
         ) = parse_arguments()
 
         print("\n" + "=" * 65)
@@ -829,7 +991,7 @@ def main():
         print(
             f" Parametri: Modello='{model_arg}', Device='{device_arg}', Benchmark='{benchmark_arg}', "
             f"Stressor={'ON (' + str(stressor_arg or 'cpu') + ')' if use_stressor_arg else 'OFF (Baseline)'}, "
-            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}"
+            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}, No-SSH={no_ssh_arg}"
         )
 
         config = instantiate_run(
@@ -846,7 +1008,8 @@ def main():
             ssh_dest=ssh_dest_arg,
             ssh_port=ssh_port_arg,
             ssh_key=ssh_key_arg,
-            threads=threads_arg
+            threads=threads_arg,
+            no_ssh=no_ssh_arg
         )
 
         print("\n" + "=" * 65)
@@ -859,10 +1022,13 @@ def main():
         print(f" * Campioni (Task):   {config.sample_count} (su {config.dataset_total_samples} nel dataset)")
         print(f" * Modalità Stressor: {'ATTIVO' if config.use_stressor else 'DISATTIVO (Baseline)'}")
         if config.use_stressor:
-            print(f" * Stressor Scelto:   Classe='{config.stressor_class}', Metodo='{config.stressor_method}' (3D Size S: {config.has_size_factor})")
+            methods_display = config.stressor_methods if config.stressor_methods else config.stressor_method
+            print(f" * Stressor Scelto:   Classe='{config.stressor_class}', Metodi={methods_display} (3D Size S: {config.has_size_factor})")
         print(f" * Ripetizioni/Exp:   {config.repetitions}")
         print(f" * Attesa Transitorio:{config.transient_wait_sec} s (Reboot fine run: {config.reboot_after_run})")
-        if config.ssh_target:
+        if config.no_ssh or not config.ssh_target:
+            print(f" * Export SSH CSV:    DISABILITATO (--no-ssh attivo o nessun target)")
+        else:
             print(f" * Export SSH CSV:    {config.ssh_target}:{config.ssh_dest} (porta {config.ssh_port})")
         print(f" * Runtime:           {config.llama_cli_path} (-t {config.n_threads}, seed={config.seed})")
         print(f" * File Config:       {CONFIG_OUTPUT_PATH}")

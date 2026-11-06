@@ -44,6 +44,10 @@ from setup_run import (
     instantiate_run,
     format_mmlu_prompt,
     format_spider_prompt,
+    get_hardware_cache_info,
+    get_cpu_cache_levels,
+    get_methods_for_class,
+    STRESSOR_FAMILY_ORDER,
 )
 
 STATE_FILE_PATH = SCRIPT_DIR / "experiment_state.json"
@@ -56,8 +60,8 @@ STRESS_TMP_DIR = Path("/tmp/edgeai_stress_ng_tmp") if os.name != "nt" else (PROJ
 
 # Livelli del Piano Fattoriale (DoE)
 # I fattori sperimentali sono esclusivamente:
-#   1. Carico worker (N_LEVELS): 25%, 50%, 75%, 100%
-#   2. Working-set size (S_LEVELS): 25%, 50%, 75% (solo per mem e io)
+#   1. Carico worker (N_LEVELS): 25%, 50%, 75%, 100% del numero di workers totali
+#   2. Working-set size (S_LEVELS): 25%, 50%, 75% della dimensione massima (solo per mem e io)
 # Il tempo è fisso e costante al tempo totale (t_tot) per l'intera durata della richiesta.
 N_LEVELS = [
     ("N25", "25% N_tot", 0.25),
@@ -405,61 +409,89 @@ def get_total_ram_mb() -> int:
 
 def build_stress_ng_cmd(
     stressor_class: str,
-    stressor_method: str,
-    n_fraction: float,
-    s_fraction: Optional[float],
-    total_cores: int
+    stressor_method: Optional[str] = None,
+    n_fraction: float = 1.0,
+    s_fraction: Optional[float] = None,
+    total_cores: int = 4
 ) -> List[str]:
-    """Costruisce il comando stress-ng in base a classe, metodo, livello N e dimensione S."""
+    """
+    Costruisce il comando stress-ng eseguendo simultaneamente tutti i metodi
+    della famiglia di stressor con i fattori (N workers e S working-set)
+    applicati con lo stesso valore per tutti i metodi della famiglia.
+    """
     workers = max(1, int(round(total_cores * n_fraction)))
     STRESS_TMP_DIR.mkdir(parents=True, exist_ok=True)
     cmd = ["stress-ng", "--metrics-brief", "--temp-path", str(STRESS_TMP_DIR)]
 
-    if stressor_class == "cpu":
-        if stressor_method == "matrix":
-            cmd += ["--matrix", str(workers)]
-        elif stressor_method == "fft":
-            cmd += ["--fft", str(workers)]
-        else:
-            cmd += ["--cpu", str(workers)]
+    s_clean_class = str(stressor_class or "cpu").lower().strip()
+    if s_clean_class in ("matrix", "fft"):
+        s_clean_class = "cpu"
+    elif s_clean_class in ("vm", "stream", "memrate", "mem_rate", "memoria", "memory"):
+        s_clean_class = "mem"
+    elif s_clean_class in ("cache", "l1cache", "l1-cache", "llc-affinity", "llc_affinity"):
+        s_clean_class = "cache"
+    elif s_clean_class in ("io", "i/o", "iomix", "hdd", "disk"):
+        s_clean_class = "io"
+    elif s_clean_class in ("os", "sched", "fork", "switch", "scheduler", "schedpolicy"):
+        s_clean_class = "os"
+    elif s_clean_class in ("interrupt", "interrupts", "timer", "sigq", "irq"):
+        s_clean_class = "interrupt"
 
-    elif stressor_class == "mem":
+    s_frac = s_fraction if s_fraction is not None else 0.50
+
+    # 1. CPU (cpu, matrix, fft eseguiti simultaneamente)
+    if s_clean_class == "cpu":
+        cmd += [
+            "--cpu", str(workers),
+            "--matrix", str(workers),
+            "--fft", str(workers)
+        ]
+
+    # 2. MEMORIA (vm, stream, mem_rate con fattore S applicato all'allocazione memoria)
+    elif s_clean_class == "mem":
         ram_mb = get_total_ram_mb()
-        s_frac = s_fraction if s_fraction is not None else 0.50
         alloc_mb_total = max(64, int(ram_mb * 0.50 * s_frac))
         alloc_per_worker = max(16, alloc_mb_total // workers)
-        if stressor_method == "stream":
-            cmd += ["--stream", str(workers), "--stream-l3-size", f"{alloc_per_worker}M"]
-        elif stressor_method == "memrate":
-            cmd += ["--memrate", str(workers), "--memrate-bytes", f"{alloc_per_worker}M"]
-        else:
-            cmd += ["--vm", str(workers), "--vm-bytes", f"{alloc_per_worker}M"]
+        cmd += [
+            "--vm", str(workers),
+            "--vm-bytes", f"{alloc_per_worker}M",
+            "--stream", str(workers),
+            "--memrate", str(workers)
+        ]
 
-    elif stressor_class == "cache":
-        if stressor_method == "l1cache":
-            cmd += ["--l1cache", str(workers)]
-        else:
-            cmd += ["--cache", str(workers)]
+    # 3. CACHE (cache, l1-cache, llc-affinity se livelli > 2)
+    elif s_clean_class == "cache":
+        cmd += [
+            "--cache", str(workers),
+            "--l1cache", str(workers)
+        ]
+        if get_cpu_cache_levels() > 2:
+            cmd += ["--llc-affinity", str(workers)]
 
-    elif stressor_class == "io":
-        s_frac = s_fraction if s_fraction is not None else 0.50
+    # 4. I/O (iomix, hdd eseguiti simultaneamente con lo stesso S)
+    elif s_clean_class == "io":
         file_mb = max(16, int(512 * s_frac))
-        if stressor_method == "hdd":
-            cmd += ["--hdd", str(workers), "--hdd-bytes", f"{file_mb}M"]
-        else:
-            cmd += ["--iomix", str(workers), "--iomix-bytes", f"{file_mb}M"]
+        cmd += [
+            "--iomix", str(workers),
+            "--iomix-bytes", f"{file_mb}M",
+            "--hdd", str(workers),
+            "--hdd-bytes", f"{file_mb}M"
+        ]
 
-    elif stressor_class == "sched":
-        if stressor_method == "fork":
-            cmd += ["--fork", str(workers)]
-        else:
-            cmd += ["--switch", str(workers)]
+    # 5. OS / SCHEDULER (schedpolicy, fork, switch eseguiti simultaneamente)
+    elif s_clean_class in ("os", "sched"):
+        cmd += [
+            "--schedpolicy", str(workers),
+            "--fork", str(workers),
+            "--switch", str(workers)
+        ]
 
-    elif stressor_class == "interrupt":
-        if stressor_method == "sigq":
-            cmd += ["--sigq", str(workers)]
-        else:
-            cmd += ["--timer", str(workers)]
+    # 6. INTERRUPT (timer, sigq eseguiti simultaneamente)
+    elif s_clean_class in ("interrupt", "interrupts"):
+        cmd += [
+            "--timer", str(workers),
+            "--sigq", str(workers)
+        ]
 
     else:
         cmd += ["--cpu", str(workers)]
@@ -917,6 +949,9 @@ def send_files_via_ssh(
     Protetto con try/except e timeout per non bloccare mai lo script se la rete cade.
     """
     try:
+        if config.get("no_ssh"):
+            return False
+
         ssh_target = config.get("ssh_target") or os.environ.get("SSH_TARGET")
         if not ssh_target:
             return False
@@ -991,6 +1026,10 @@ def send_files_via_ssh(
 
 def sync_all_existing_csvs_via_ssh(config: Dict[str, Any]):
     """Invia tutti i file CSV e log già prodotti verso la macchina remota."""
+    if config.get("no_ssh"):
+        print(" [INFO] Sincronizzazione SSH disabilitata (--no-ssh attivo).")
+        return
+
     files_to_send: List[Tuple[Path, str]] = []
 
     if TIMESERIES_DIR.exists():
@@ -1025,13 +1064,19 @@ def sync_all_existing_csvs_via_ssh(config: Dict[str, Any]):
 # COSTRUZIONE E GESTIONE DELLA CODA ESPERIMENTI (CON SCRITTURA ATOMICA E BACKUP)
 # ==============================================================================
 def build_experiment_queue(config: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Costruisce la lista di esperimenti da eseguire (ciascuno ripetuto per config['repetitions'] volte)."""
+    """
+    Costruisce la lista di esperimenti da eseguire (ciascuno ripetuto per config['repetitions'] volte).
+    Ciascuna famiglia di stressor viene eseguita con tutti i suoi metodi simultaneamente:
+      - Famiglie 2D (cpu, os, interrupt): 4 (N) * 1 (D) * 3 reps = 12 run per famiglia
+      - Famiglie 3D (mem, cache, io): 4 (N) * 3 (S) * 1 (D) * 3 reps = 36 run per famiglia
+      - Modalità all-stressor: 12 + 36 + 36 + 36 + 12 + 12 = 144 run totali
+    """
     reps = int(config.get("repetitions", 3))
     queue: List[Dict[str, Any]] = []
 
-    if not config.get("use_stressor", False):
+    if not config.get("use_stressor", False) or config.get("stressor_class") in ("none", "baseline"):
         for rep in range(1, reps + 1):
-            exp_id = f"baseline_{config['model_id']}_{config['device']}_{config['benchmark_name'].lower()}_rep{rep}"
+            exp_id = f"baseline_{config['model_id'].lower()}_{config['device']}_{config['benchmark_name'].lower()}_rep{rep}"
             queue.append({
                 "exp_id": exp_id,
                 "mode": "baseline",
@@ -1047,10 +1092,38 @@ def build_experiment_queue(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                 "repetition": rep,
                 "status": "pending"
             })
+        return queue
+
+    s_clean = str(config.get("stressor_class", "cpu")).strip().lower()
+
+    if s_clean in ("all", "all-stressor", "all-stressors", "all_stressor", "all_stressors"):
+        classes_to_run = STRESSOR_FAMILY_ORDER
+    elif s_clean in ("sched", "scheduler"):
+        classes_to_run = ["os"]
+    elif s_clean in ("memoria", "memory"):
+        classes_to_run = ["mem"]
+    elif s_clean in ("matrix", "fft"):
+        classes_to_run = ["cpu"]
+    elif s_clean in ("vm", "stream", "memrate", "mem_rate"):
+        classes_to_run = ["mem"]
+    elif s_clean in ("l1cache", "l1-cache", "llc-affinity", "llc_affinity"):
+        classes_to_run = ["cache"]
+    elif s_clean in ("iomix", "hdd", "disk"):
+        classes_to_run = ["io"]
+    elif s_clean in ("fork", "switch"):
+        classes_to_run = ["os"]
+    elif s_clean in ("timer", "sigq", "interrupts", "irq"):
+        classes_to_run = ["interrupt"]
+    elif s_clean in STRESSOR_FAMILY_ORDER:
+        classes_to_run = [s_clean]
     else:
-        s_class = config["stressor_class"]
-        s_method = config["stressor_method"]
-        has_size = config.get("has_size_factor", s_class in ("mem", "io"))
+        classes_to_run = ["cpu"]
+
+    for s_class in classes_to_run:
+        methods = get_methods_for_class(s_class)
+        s_method_label = "+".join(methods)
+        # Classi 3D (con fattore di working-set S): mem, io
+        has_size = s_class in ("mem", "io")
         s_iter = S_LEVELS if has_size else [("N/A", "N/A", None)]
 
         for n_tag, n_label, n_frac in N_LEVELS:
@@ -1066,7 +1139,7 @@ def build_experiment_queue(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                             "exp_id": exp_id,
                             "mode": "stressor",
                             "stressor_class": s_class,
-                            "stressor_method": s_method,
+                            "stressor_method": s_method_label,
                             "n_tag": n_tag,
                             "n_label": n_label,
                             "n_fraction": n_frac,
@@ -1382,15 +1455,34 @@ def execute_experiment(
 
         # 2. Salvataggio campioni per singolo task (con vmstat allineato 1:1 per task)
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        rep_num = exp.get("repetition", 1)
+        tasks_rep_csv_path: Optional[Path] = None
+
         if exp["mode"] == "baseline":
+            # File cumulativo di riepilogo
             tasks_csv_path = RESULTS_DIR / f"baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_tasks.csv"
-            responses_json_path = RESULTS_DIR / f"responses_baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{exp['repetition']}.json"
+            # File specifico e isolato per la singola ripetizione
+            tasks_rep_csv_path = RESULTS_DIR / f"baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{rep_num}_tasks.csv"
+            responses_json_path = RESULTS_DIR / f"responses_baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{rep_num}.json"
         else:
+            # Per gli stressor, l'exp_id contiene già _rep{rep} (es. tasks_run_cpu_N25_t_tot_rep1.csv)
             tasks_csv_path = RESULTS_DIR / f"tasks_{exp['exp_id']}.csv"
             responses_json_path = RESULTS_DIR / f"responses_{exp['exp_id']}.json"
 
-        write_header = not tasks_csv_path.exists() or exp["mode"] != "baseline" or exp["repetition"] == 1
-        mode_flag = "w" if write_header else "a"
+        # 2a. Salvataggio su file dedicato della singola ripetizione (se baseline)
+        if task_records and tasks_rep_csv_path is not None:
+            fieldnames = list(task_records[0].keys())
+            with open(tasks_rep_csv_path, "w", newline="", encoding="utf-8") as f_rep:
+                writer_rep = csv.DictWriter(f_rep, fieldnames=fieldnames)
+                writer_rep.writeheader()
+                writer_rep.writerows(task_records)
+                f_rep.flush()
+                os.fsync(f_rep.fileno())
+            print(f" [OK] Metriche singola ripetizione {rep_num} ({len(task_records)} task) salvate in: {tasks_rep_csv_path}")
+
+        # 2b. Salvataggio su tasks_csv_path (file primario o cumulativo)
+        write_header = not tasks_csv_path.exists() or exp["mode"] != "baseline" or rep_num == 1
+        mode_flag = "w" if (exp["mode"] != "baseline" or rep_num == 1 or not tasks_csv_path.exists()) else "a"
         if task_records:
             fieldnames = list(task_records[0].keys())
             with open(tasks_csv_path, mode_flag, newline="", encoding="utf-8") as f:
@@ -1402,7 +1494,7 @@ def execute_experiment(
                 os.fsync(f.fileno())
             print(f" [OK] Metriche per-task ({len(task_records)} task) salvate in: {tasks_csv_path}")
 
-        # Salvataggio file JSON strutturato con le risposte complete del modello
+        # Salvataggio file JSON strutturato con le risposte complete del modello (specifico per singola ripetizione)
         if responses_log:
             with open(responses_json_path, "w", encoding="utf-8") as f:
                 json.dump(responses_log, f, indent=2, ensure_ascii=False)
@@ -1416,6 +1508,8 @@ def execute_experiment(
             (tasks_csv_path, "results"),
             (responses_json_path, "results"),
         ]
+        if tasks_rep_csv_path is not None:
+            generated_files.append((tasks_rep_csv_path, "results"))
 
         if task_records:
             mean_ttft = round(statistics.mean(r["ttft_ms"] for r in task_records), 4)
@@ -1432,9 +1526,9 @@ def execute_experiment(
             mean_cpu_temp = round(statistics.mean(r["vmstat_cpu_temp_c"] for r in task_records), 2)
             mean_gpu_temp = round(statistics.mean(r["vmstat_gpu_temp_c"] for r in task_records), 2)
 
-            doe_csv_path = RESULTS_DIR / f"doe_{config['model_id'].lower()}_{config['device']}_{bench_lower}_{exp['stressor_class']}.csv"
-            doe_exists = doe_csv_path.exists()
             doe_row = {
+                "stressor_class": exp["stressor_class"],
+                "stressor_method": exp["stressor_method"],
                 "num_workers": exp["n_label"],
                 "size": exp["s_label"],
                 "duration": exp["duration"],
@@ -1443,6 +1537,10 @@ def execute_experiment(
                 "throughput_tok_s": mean_thr,
                 "jitter_ms": mean_jitter,
             }
+
+            # 1. DoE per classe/famiglia (es. doe_slm-1b_gpu_mmlu_cpu.csv)
+            doe_csv_path = RESULTS_DIR / f"doe_{config['model_id'].lower()}_{config['device']}_{bench_lower}_{exp['stressor_class']}.csv"
+            doe_exists = doe_csv_path.exists()
             with open(doe_csv_path, "a", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=list(doe_row.keys()))
                 if not doe_exists:
@@ -1517,7 +1615,17 @@ def parse_args():
         "-s", "--stressor",
         type=str,
         default=None,
-        help="Quale stressor avviare: 'cpu', 'mem', 'io', 'cache', 'sched', 'interrupt' (o metodo specifico: 'vm', 'stream', 'iomix', ecc.)"
+        help=(
+            "Quale stressor avviare: 'cpu', 'mem', 'cache', 'io', 'os', 'interrupt', 'all-stressor' "
+            "(l'esecuzione viene effettuata sull'intera classe di appartenenza)"
+        )
+    )
+    parser.add_argument(
+        "--all-stressor", "--all-stressors",
+        dest="all_stressor",
+        action="store_true",
+        default=False,
+        help="Esegue tutte le famiglie di stressor in sequenza (cpu -> mem -> cache -> io -> os -> interrupt)"
     )
     parser.add_argument("-n", "--samples", type=int, default=None, help="Numero di campioni (task) da eseguire per esperimento")
     parser.add_argument("-r", "--repetitions", type=int, default=None, help="Numero di ripetizioni per esperimento (default: 3)")
@@ -1556,6 +1664,12 @@ def parse_args():
         default=False,
         help="Invia immediatamente via SSH tutti i CSV già presenti sulla board verso la tua macchina ed esce"
     )
+    parser.add_argument(
+        "--no-ssh",
+        action="store_true",
+        default=False,
+        help="Disabilita l'invio dei file dei risultati via SSH/SCP al termine degli esperimenti"
+    )
     parser.add_argument("--reset", action="store_true", default=False, help="Azzera il checkpoint (experiment_state.json) e ricomincia da capo")
     parser.add_argument("--status", action="store_true", default=False, help="Mostra lo stato di avanzamento della coda di esperimenti ed esce")
     return parser.parse_args()
@@ -1576,6 +1690,7 @@ def main():
 
         need_reinstantiate = (
             not current_cfg
+            or args.all_stressor
             or args.model is not None
             or args.device is not None
             or args.benchmark is not None
@@ -1588,6 +1703,7 @@ def main():
             or args.ssh_dest is not None
             or args.ssh_port is not None
             or args.ssh_key is not None
+            or args.no_ssh
         )
 
         if need_reinstantiate:
@@ -1595,19 +1711,24 @@ def main():
             device_in = args.device or current_cfg.get("device", "gpu")
             bench_in = args.benchmark or current_cfg.get("benchmark_name", "mmlu")
 
-            if args.use_stressor is not None:
+            if args.all_stressor:
+                use_stressor_in = True
+                stressor_in = "all-stressor"
+            elif args.use_stressor is not None:
                 use_stressor_in = args.use_stressor
+                stressor_in = args.stressor or current_cfg.get("stressor_class", "cpu")
             elif args.stressor is not None:
                 use_stressor_in = args.stressor.strip().lower() not in ("none", "baseline", "off", "false")
+                stressor_in = args.stressor
             else:
                 use_stressor_in = current_cfg.get("use_stressor", False)
-
-            stressor_in = args.stressor or current_cfg.get("stressor_method") or current_cfg.get("stressor_class", "cpu")
+                stressor_in = current_cfg.get("stressor_class", "cpu")
             samples_in = args.samples if args.samples is not None else current_cfg.get("sample_count", 40)
             reps_in = args.repetitions if args.repetitions is not None else current_cfg.get("repetitions", 3)
             wait_in = args.transient_wait if args.transient_wait is not None else current_cfg.get("transient_wait_sec", 90)
             reboot_in = args.reboot if args.reboot is not None else current_cfg.get("reboot_after_run", True)
-            ssh_target_in = args.ssh_target if args.ssh_target is not None else current_cfg.get("ssh_target")
+            no_ssh_in = bool(args.no_ssh or current_cfg.get("no_ssh", False))
+            ssh_target_in = None if no_ssh_in else (args.ssh_target if args.ssh_target is not None else current_cfg.get("ssh_target"))
             ssh_dest_in = args.ssh_dest if args.ssh_dest is not None else current_cfg.get("ssh_dest", "./EdgeAI_Results")
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
             ssh_key_in = args.ssh_key if args.ssh_key is not None else current_cfg.get("ssh_key")
@@ -1625,7 +1746,8 @@ def main():
                 ssh_target=ssh_target_in,
                 ssh_dest=ssh_dest_in,
                 ssh_port=ssh_port_in,
-                ssh_key=ssh_key_in
+                ssh_key=ssh_key_in,
+                no_ssh=no_ssh_in
             )
             with open(CONFIG_OUTPUT_PATH, "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -1633,6 +1755,9 @@ def main():
             config = current_cfg
             if args.reboot is not None:
                 config["reboot_after_run"] = args.reboot
+            if args.no_ssh:
+                config["no_ssh"] = True
+                config["ssh_target"] = None
 
         if args.sync_only:
             sync_all_existing_csvs_via_ssh(config)

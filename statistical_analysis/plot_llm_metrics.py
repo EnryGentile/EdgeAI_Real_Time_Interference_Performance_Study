@@ -99,7 +99,7 @@ def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t
     model_tag = parts[0] if len(parts) > 0 else "slm"
     device_tag = parts[1] if len(parts) > 1 else "gpu"
     bench_tag = parts[2] if len(parts) > 2 else "mmlu"
-    stressor_tag = parts[3] if len(parts) > 3 else "stressor"
+    stressor_tag = "_".join(parts[3:]) if len(parts) > 3 else "stressor"
 
     baseline_means = load_baseline_mean(model_tag, device_tag, bench_tag)
 

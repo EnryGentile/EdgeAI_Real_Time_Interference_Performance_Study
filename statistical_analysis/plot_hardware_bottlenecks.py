@@ -51,7 +51,7 @@ def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
         return pd.DataFrame()
 
     records = []
-    re_stress = re.compile(r"run_([a-zA-Z0-9]+)_(N\d+)_(t_[a-z]+)(?:_(S\d+))?_rep(\d+)_timeseries\.csv")
+    re_stress = re.compile(r"run_([a-zA-Z0-9_\-]+?)_(N\d+)_(t_[a-z]+)(?:_(S\d+))?_rep(\d+)_timeseries\.csv")
     re_base = re.compile(r"baseline_([a-zA-Z0-9\-]+)_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_rep(\d+)_timeseries\.csv")
 
     for filepath in ts_files:

@@ -13,14 +13,20 @@ In conformità ai requisiti sperimentali, i fattori del DoE sono rigorosamente d
 1. **Numero di Worker ($N$)**:
    - 4 livelli: `25% N_tot`, `50% N_tot`, `75% N_tot`, `N_tot` (100% dei core fisici).
 2. **Working-Set Size ($S$)**:
-   - 3 livelli: `25% S_tot`, `50% S_tot`, `75% S_tot` (percentuale della RAM o dello spazio I/O).
-   - **Presente ESCLUSIVAMENTE** per gli stressor 3D (`mem`, `io`). Per gli stressor 2D (`cpu`, `cache`, `sched`, `interrupt`), la size è assente (`N/A`).
+   - 3 livelli: `25% S_tot`, `50% S_tot`, `75% S_tot` (percentuale della dimensione massima: RAM per `mem`, dimensione massima file per `io`).
+   - **Presente ESCLUSIVAMENTE per gli stressor 3D** (`mem`, `io`). Per gli stressor 2D (`cpu`, `cache`, `os`, `interrupt`), il fattore size è assente (`N/A`).
 3. **Durata Temporale ($D$)**:
    - **NON è un fattore variabile**: è fissa e costante al **tempo totale ($t_{\text{tot}}$)** della richiesta di inferenza, coprendo sia la fase di *prefill* (elaborazione del prompt) che la fase di *decode* (generazione autoregressiva dei token) in modo continuativo.
 
 ### Dimensionamento della Matrice Sperimentale
-- **Stressor 2D** (`cpu`, `cache`, `sched`, `interrupt`): $4 \text{ livelli } (N) \times 1 \text{ durata } (t_{\text{tot}}) \times 3 \text{ ripetizioni} = \mathbf{12 \text{ esecuzioni}}$.
-- **Stressor 3D** (`mem`, `io`): $4 \text{ livelli } (N) \times 3 \text{ livelli } (S) \times 1 \text{ durata } (t_{\text{tot}}) \times 3 \text{ ripetizioni} = \mathbf{36 \text{ esecuzioni}}$.
+Ogni volta che si seleziona una famiglia di stressor, il framework avvia **tutti i metodi appartenenti alla famiglia simultaneamente** in un unico comando `stress-ng`, applicando gli **stessi identici fattori** ($N$ worker e, ove previsto, $S$ size) a ciascun metodo:
+- **Famiglia `cpu`** (`cpu`, `matrix`, `fft` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{12 \text{ esecuzioni}}$.
+- **Famiglia `mem`** (`vm`, `stream`, `mem_rate` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 3 size ($S$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{36 \text{ esecuzioni}}$.
+- **Famiglia `cache`** (`cache`, `l1-cache`, `llc-affinity` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{12 \text{ esecuzioni}}$.
+- **Famiglia `io`** (`iomix`, `hdd` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 3 size ($S$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{36 \text{ esecuzioni}}$.
+- **Famiglia `os`** (`schedpolicy`, `fork`, `switch` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{12 \text{ esecuzioni}}$.
+- **Famiglia `interrupt`** (`timer`, `sigq` eseguiti simultaneamente): 4 livelli ($N$) $\times$ 1 durata ($t_{\text{tot}}$) $\times$ 3 ripetizioni = $\mathbf{12 \text{ esecuzioni}}$.
+- **Modalità `all-stressor`**: Esegue tutte le 6 famiglie di stressor in sequenza ordinata (`cpu` $\to$ `mem` $\to$ `cache` $\to$ `io` $\to$ `os` $\to$ `interrupt`) per un totale di $\mathbf{120 \text{ esecuzioni}}$ ($12 + 36 + 12 + 36 + 12 + 12$) con checkpointing e reboot automatico.
 - **Baseline** (senza stressor): 1 configurazione $\times 3 \text{ ripetizioni}$ su $n_0 = 40$ task per la stima della varianza iniziale e il dimensionamento CLT.
 
 ---
@@ -196,7 +202,7 @@ bash setup/setup_autostart.sh enable
 *Questo comando crea e attiva un servizio di sistema (`edgeai-doe.service`) configurato per attendere che la rete e `tailscaled` siano online, eseguire l'esperimento successivo, inviare i dati sul PC e riavviare la board.*
 
 #### 2. Inizializza e lancia la campagna sperimentale
-Configura e avvia la campagna con lo stressor scelto (es. `cpu`):
+Configura e avvia la campagna con la classe di stressor scelta (es. `cpu`, `mem`, `cache`, `io`, `os`, `interrupt`, oppure `--all-stressor` per eseguirle tutte in sequenza):
 ```bash
 python3 setup/run_experiments.py \
   --model slm \
@@ -211,6 +217,7 @@ python3 setup/run_experiments.py \
   --ssh-port 22 \
   --ssh-dest "C:/Users/gabri/OneDrive/Desktop/Universita/Magistrale/Real-Time Systems and Industrial Applications/EdgeAI_Real_Time_Interference_Performance_Study"
 ```
+*Per eseguire **tutte le famiglie di stressor in sequenza** (`cpu` -> `mem` -> `cache` -> `io` -> `os` -> `interrupt`), è sufficiente passare `--all-stressor` (o `--stressor all-stressor`).*
 *Dopo la prima run, la Jetson si riavvierà e proseguirà in **completa autonomia** fino a completare tutti i run.*
 
 #### 3. Monitoraggio Headless
