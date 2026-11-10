@@ -84,7 +84,7 @@ KNOWN_BENCHMARKS = {
         "type": "Prefill-heavy (Compute-bound)",
         "file": "mmlu_first_40.json",
         "fallback_file": "mmlu.json",
-        "default_max_tokens": 32,
+        "default_max_tokens": 64,
         "description": "Massive Multitask Language Understanding (Multiple Choice QA)"
     },
     "spider": {
@@ -92,7 +92,7 @@ KNOWN_BENCHMARKS = {
         "type": "Decode-heavy (Memory-bandwidth-bound)",
         "file": "spider_first_40.json",
         "fallback_file": "spider.json",
-        "default_max_tokens": 128,
+        "default_max_tokens": 256,
         "description": "Complex Text-to-SQL Benchmark"
     }
 }
@@ -655,7 +655,8 @@ def instantiate_run(
     threads: Optional[int] = None,
     seed: int = 42,
     no_ssh: bool = False,
-    ctx_size: int = 2048
+    ctx_size: int = 2048,
+    max_tokens: Optional[int] = None
 ) -> RunConfig:
     """
     Valida gli argomenti, esegue i check e istanzia la configurazione di esecuzione.
@@ -713,7 +714,7 @@ def instantiate_run(
         n_threads = threads if (threads is not None and threads > 0) else n_cpu_cores
         bench_info = KNOWN_BENCHMARKS[b_clean]
         model_info = KNOWN_MODELS[model_key]
-        max_tokens = bench_info["default_max_tokens"]
+        resolved_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else bench_info["default_max_tokens"]
         temperature = 0.0
 
         example_cmd = [
@@ -726,7 +727,7 @@ def instantiate_run(
             "-t", str(n_threads),
             "--temp", str(temperature),
             "-s", str(seed),
-            "-n", str(max_tokens),
+            "-n", str(resolved_max_tokens),
             "--no-display-prompt"
         ]
 
@@ -755,7 +756,7 @@ def instantiate_run(
             seed=seed,
             llama_cli_path=str(llama_cli),
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=resolved_max_tokens,
             n_threads=n_threads,
             example_cmd=example_cmd,
             ctx_size=ctx_size,
@@ -930,6 +931,12 @@ def parse_arguments():
         default=False,
         help="Disabilita l'invio dei file dei risultati via SSH/SCP al termine degli esperimenti"
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Numero massimo di token generati in output (-n). Default: 64 per MMLU, 256 per Spider."
+    )
 
     args = parser.parse_args()
 
@@ -974,7 +981,8 @@ def parse_arguments():
         args.ssh_key,
         args.threads,
         args.no_ssh,
-        args.ctx_size
+        args.ctx_size,
+        args.max_tokens
     )
 
 
@@ -996,7 +1004,8 @@ def main():
             ssh_key_arg,
             threads_arg,
             no_ssh_arg,
-            ctx_size_arg
+            ctx_size_arg,
+            max_tokens_arg
         ) = parse_arguments()
 
         print("\n" + "=" * 65)
@@ -1005,7 +1014,8 @@ def main():
         print(
             f" Parametri: Modello='{model_arg}', Device='{device_arg}', Benchmark='{benchmark_arg}', "
             f"Stressor={'ON (' + str(stressor_arg or 'cpu') + ')' if use_stressor_arg else 'OFF (Baseline)'}, "
-            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}, Context={ctx_size_arg}, No-SSH={no_ssh_arg}"
+            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}, Context={ctx_size_arg}, "
+            f"MaxTokens={max_tokens_arg or 'Default Benchmark'}, No-SSH={no_ssh_arg}"
         )
 
         config = instantiate_run(
@@ -1024,7 +1034,8 @@ def main():
             ssh_key=ssh_key_arg,
             threads=threads_arg,
             no_ssh=no_ssh_arg,
-            ctx_size=ctx_size_arg
+            ctx_size=ctx_size_arg,
+            max_tokens=max_tokens_arg
         )
 
         print("\n" + "=" * 65)
@@ -1047,6 +1058,7 @@ def main():
             print(f" * Export SSH CSV:    {config.ssh_target}:{config.ssh_dest} (porta {config.ssh_port})")
         print(f" * Runtime:           {config.llama_cli_path} (-t {config.n_threads}, seed={config.seed})")
         print(f" * Finestra Contesto: {config.ctx_size} token (-c {config.ctx_size})")
+        print(f" * Max Output Tokens: {config.max_tokens} token (-n {config.max_tokens})")
         print(f" * File Config:       {CONFIG_OUTPUT_PATH}")
         print("=" * 65)
         print("\nPer avviare la campagna sperimentale esegui: python setup/run_experiments.py\n")

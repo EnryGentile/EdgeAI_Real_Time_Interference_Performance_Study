@@ -1795,6 +1795,12 @@ def parse_args():
         default=False,
         help="Disabilita l'invio dei file dei risultati via SSH/SCP al termine degli esperimenti"
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Numero massimo di token in output (-n). Default: da run_config o 64 (MMLU) / 256 (Spider)"
+    )
     parser.add_argument("--reset", action="store_true", default=False, help="Azzera il checkpoint (experiment_state.json) e ricomincia da capo")
     parser.add_argument("--status", action="store_true", default=False, help="Mostra lo stato di avanzamento della coda di esperimenti ed esce")
     return parser.parse_args()
@@ -1829,6 +1835,7 @@ def main():
             or args.ssh_port is not None
             or args.ssh_key is not None
             or args.ctx_size is not None
+            or args.max_tokens is not None
             or args.no_ssh
         )
 
@@ -1859,6 +1866,7 @@ def main():
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
             ssh_key_in = args.ssh_key if args.ssh_key is not None else current_cfg.get("ssh_key")
             ctx_size_in = args.ctx_size if args.ctx_size is not None else current_cfg.get("ctx_size", 2048)
+            max_tokens_in = args.max_tokens if args.max_tokens is not None else current_cfg.get("max_tokens")
 
             instantiate_run(
                 model_input=model_in,
@@ -1875,7 +1883,8 @@ def main():
                 ssh_port=ssh_port_in,
                 ssh_key=ssh_key_in,
                 no_ssh=no_ssh_in,
-                ctx_size=ctx_size_in
+                ctx_size=ctx_size_in,
+                max_tokens=max_tokens_in
             )
             with open(CONFIG_OUTPUT_PATH, "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -1885,6 +1894,8 @@ def main():
                 config["reboot_after_run"] = args.reboot
             if args.ctx_size is not None:
                 config["ctx_size"] = args.ctx_size
+            if args.max_tokens is not None:
+                config["max_tokens"] = args.max_tokens
             if args.no_ssh:
                 config["no_ssh"] = True
                 config["ssh_target"] = None
