@@ -720,6 +720,8 @@ def instantiate_run(
             str(llama_cli),
             "-m", str(model_path),
             "-c", str(ctx_size),
+            "-b", "512",
+            "-ub", "256",
             "-ngl", str(n_gpu_layers),
             "-t", str(n_threads),
             "--temp", str(temperature),

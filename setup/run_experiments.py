@@ -661,6 +661,8 @@ def _run_llama_cli_once(
         llama_bin,
         "-m", config["model_path"],
         "-c", str(ctx_size),
+        "-b", "512",
+        "-ub", "256",
         "-ngl", str(ngl),
         "-t", str(n_threads),
         "--temp", str(config["temperature"]),
