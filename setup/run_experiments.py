@@ -640,10 +640,6 @@ def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
         if "--perf" in help_text:
             extra.append("--perf")
 
-        # Disabilitazione mmap per architetture UMA (Jetson) per prevenire OOM su page cache
-        if "--no-mmap" in help_text:
-            extra.append("--no-mmap")
-
     except Exception:
         pass
 
@@ -678,7 +674,6 @@ def _run_llama_cli_once(
         "-s", str(config.get("seed", 42)),
         "-n", str(config["max_tokens"]),
         "--no-display-prompt",
-        "--no-mmap",
     ] + _detect_llama_cli_extra_flags(llama_bin) + ["-p", prompt]
 
     stress_proc: Optional[subprocess.Popen] = None

@@ -733,8 +733,7 @@ def instantiate_run(
             "--temp", str(temperature),
             "-s", str(seed),
             "-n", str(resolved_max_tokens),
-            "--no-display-prompt",
-            "--no-mmap"
+            "--no-display-prompt"
         ]
 
         config = RunConfig(
