@@ -717,12 +717,19 @@ def instantiate_run(
         resolved_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else bench_info["default_max_tokens"]
         temperature = 0.0
 
+        # Su Jetson Orin Nano (8GB UMA), LLM-8B su GPU richiede -c 1024 -b 256 -ub 128
+        # per allocare la KV cache nei buffer DMA contigui di nvmap senza rischio di ENOMEM
+        is_8b_gpu = (d_clean == "gpu") and (model_key in ("llm", "8b") or "8b" in model_info["id"].lower())
+        resolved_ctx = min(ctx_size, 1024) if is_8b_gpu else ctx_size
+        resolved_b = 256 if is_8b_gpu else 512
+        resolved_ub = 128 if is_8b_gpu else 256
+
         example_cmd = [
             str(llama_cli),
             "-m", str(model_path),
-            "-c", str(ctx_size),
-            "-b", "512",
-            "-ub", "256",
+            "-c", str(resolved_ctx),
+            "-b", str(resolved_b),
+            "-ub", str(resolved_ub),
             "-ngl", str(n_gpu_layers),
             "-t", str(n_threads),
             "--temp", str(temperature),
@@ -758,7 +765,7 @@ def instantiate_run(
             max_tokens=resolved_max_tokens,
             n_threads=n_threads,
             example_cmd=example_cmd,
-            ctx_size=ctx_size,
+            ctx_size=resolved_ctx,
             stressor_methods=s_methods,
             no_ssh=no_ssh
         )

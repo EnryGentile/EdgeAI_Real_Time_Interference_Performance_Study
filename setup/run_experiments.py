@@ -684,9 +684,18 @@ class LlamaPersistentSession:
         self.model_path = str(config["model_path"])
         self.ngl = int(config["n_gpu_layers"])
         self.n_threads = int(config["n_threads"])
-        self.ctx_size = int(config.get("ctx_size", 2048))
-        self.b_size = 512
-        self.ub_size = 256
+        raw_ctx = int(config.get("ctx_size", 1024))
+        # Su Jetson Orin Nano (8GB UMA), LLM-8B richiede KV cache compatta (1024 token, b=256, ub=128)
+        # per non eccedere i blocchi di memoria contigua DMA di nvmap
+        is_8b = "8b" in self.model_path.lower() or "llm" in str(config.get("model_id", "")).lower()
+        if self.ngl > 0 and is_8b:
+            self.ctx_size = min(raw_ctx, 1024)
+            self.b_size = 256
+            self.ub_size = 128
+        else:
+            self.ctx_size = raw_ctx
+            self.b_size = 512
+            self.ub_size = 256
         self.temperature = float(config.get("temperature", 0.0))
         self.seed = int(config.get("seed", 42))
         self.max_tokens = int(config["max_tokens"])
@@ -701,7 +710,9 @@ class LlamaPersistentSession:
         self._turn_done_event = threading.Event()
         self._collecting_turn = False
         self._stats_seen_at: Optional[float] = None
-        self._current_prompt_prefix: str = ""
+        self._prompt_tail: str = ""
+        self._prompt_echo_passed: bool = False
+        self._t_start_perf: float = 0.0
         self._stress_proc: Optional[subprocess.Popen] = None
         self._active_stress_cmd: Optional[List[str]] = None
         self._active_duration_mode: str = "t_tot"
@@ -798,31 +809,34 @@ class LlamaPersistentSession:
                                 if ">" in curr_text[m_stats.end():]:
                                     self._turn_done_event.set()
                             else:
-                                chunk_str = chunk.decode("utf-8", errors="ignore")
-                                stripped = chunk_str.strip()
-                                if (
-                                    stripped
-                                    and stripped != ">"
-                                    and "\x08" not in chunk_str
-                                    and not (self._current_prompt_prefix and self._current_prompt_prefix in chunk_str)
-                                ):
-                                    self._token_timestamps.append(now_t)
-                                    if not self._first_token_seen.is_set():
-                                        self._first_token_seen.set()
-                                        if self._active_stress_cmd and self._active_duration_mode == "t_prefill":
-                                            stop_process_tree(self._stress_proc)
-                                            self._stress_proc = None
-                                        elif self._active_stress_cmd and self._active_duration_mode == "t_decode":
-                                            try:
-                                                self._stress_proc = subprocess.Popen(
-                                                    self._active_stress_cmd,
-                                                    stdout=subprocess.DEVNULL,
-                                                    stderr=subprocess.DEVNULL,
-                                                    stdin=subprocess.DEVNULL,
-                                                    preexec_fn=preexec
-                                                )
-                                            except Exception as e_dec:
-                                                log_fallback_error("start_stress_ng_decode", e_dec)
+                                # Filtro anti-echo: ignora l'eco del prompt su stdout prima della generazione
+                                if not self._prompt_echo_passed:
+                                    tail = self._prompt_tail
+                                    if tail and tail in curr_text:
+                                        pos = curr_text.rfind(tail)
+                                        post_text = curr_text[pos + len(tail):]
+                                        post_clean = post_text.replace("\r", "").replace("\n", "").replace(">", "").strip()
+                                        if post_clean:
+                                            self._prompt_echo_passed = True
+                                            self._token_timestamps.append(now_t)
+                                            if not self._first_token_seen.is_set():
+                                                self._first_token_seen.set()
+                                                self._handle_stressor_first_token()
+                                    else:
+                                        # Nel caso in cui il prompt non sia stato stampato a terminale,
+                                        # accetta token solo dopo almeno 30ms dall'invio (durata minima di prefill)
+                                        if (now_t - self._t_start_perf) >= 0.03:
+                                            chunk_str = chunk.decode("utf-8", errors="ignore").strip()
+                                            if chunk_str and chunk_str != ">" and "\x08" not in chunk_str:
+                                                self._prompt_echo_passed = True
+                                                self._token_timestamps.append(now_t)
+                                                if not self._first_token_seen.is_set():
+                                                    self._first_token_seen.set()
+                                                    self._handle_stressor_first_token()
+                                else:
+                                    chunk_str = chunk.decode("utf-8", errors="ignore").strip()
+                                    if chunk_str and chunk_str != ">" and "\x08" not in chunk_str:
+                                        self._token_timestamps.append(now_t)
             except Exception:
                 pass
 
@@ -914,6 +928,24 @@ class LlamaPersistentSession:
             self._boot_stdout_bytes.clear()
             self._turn_stdout_bytes.clear()
 
+    def _handle_stressor_first_token(self):
+        """Interrompe lo stressor per t_prefill o lo avvia per t_decode non appena arriva il vero primo token."""
+        if self._active_stress_cmd and self._active_duration_mode == "t_prefill":
+            stop_process_tree(self._stress_proc)
+            self._stress_proc = None
+        elif self._active_stress_cmd and self._active_duration_mode == "t_decode":
+            preexec = os.setsid if os.name != "nt" else None
+            try:
+                self._stress_proc = subprocess.Popen(
+                    self._active_stress_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    preexec_fn=preexec
+                )
+            except Exception as e_dec:
+                log_fallback_error("start_stress_ng_decode", e_dec)
+
     def run_task(
         self,
         prompt: str,
@@ -929,7 +961,14 @@ class LlamaPersistentSession:
             self.reset_kv_cache()
 
         prompt_line = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
+        prompt_words = prompt_line.strip().split()
+        prompt_tail = prompt_words[-1] if prompt_words else ":"
+        if len(prompt_line.strip()) >= 20:
+            prompt_tail = prompt_line.strip()[-20:]
+
         preexec = os.setsid if os.name != "nt" else None
+        t_start_mono = time.monotonic()
+        t_start_perf = time.perf_counter()
 
         with self._lock:
             self._boot_stdout_bytes.clear()
@@ -939,13 +978,12 @@ class LlamaPersistentSession:
             self._first_token_seen.clear()
             self._turn_done_event.clear()
             self._stats_seen_at = None
-            self._current_prompt_prefix = prompt_line[:32]
+            self._prompt_tail = prompt_tail
+            self._prompt_echo_passed = False
+            self._t_start_perf = t_start_perf
             self._active_stress_cmd = stress_cmd
             self._active_duration_mode = duration_mode
             self._collecting_turn = True
-
-        t_start_mono = time.monotonic()
-        t_start_perf = time.perf_counter()
 
         if stress_cmd and duration_mode in ("t_prefill", "t_tot"):
             try:
@@ -1000,62 +1038,74 @@ class LlamaPersistentSession:
         self.tasks_completed += 1
 
         clean_resp = clean_llama_response(stdout_text, prompt)
-        prompt_tokens = max(1, len(prompt_line.split()))
         eval_tokens = max(1, len(token_timestamps) or len(clean_resp.split()))
+        est_words = max(1, len(prompt_line.split()))
 
         ttft_ms = 0.0
+        prompt_tokens = 0
         prompt_ms_per_tok = 0.0
         eval_total_ms = 0.0
         per_token_lat_ms = 0.0
         throughput_tok_s = 0.0
 
-        # 1. Parsing da [ Prompt: X t/s | Generation: Y t/s ] (formato interattivo llama-cli b1-202c1a2)
+        # 1. Parsing metriche ufficiali da stderr di llama.cpp (se presenti log prompt eval time)
+        m_prompt = PROMPT_EVAL_RE.search(stderr_text)
+        if m_prompt:
+            ttft_ms = float(m_prompt.group(1))
+            prompt_tokens = int(m_prompt.group(2))
+            prompt_ms_per_tok = float(m_prompt.group(3))
+
+        # 2. Parsing da [ Prompt: X t/s | Generation: Y t/s ] (formato interattivo standard llama-cli)
         m_turn = TURN_STATS_RE.search(stdout_text)
+        prompt_tps = 0.0
+        gen_tps = 0.0
         if m_turn:
             prompt_tps = float(m_turn.group(1).replace(",", "."))
             gen_tps = float(m_turn.group(2).replace(",", "."))
-            if token_timestamps:
-                ttft_ms = max(0.1, (token_timestamps[0] - t_start_perf) * 1000.0)
-            elif prompt_tps > 0:
-                ttft_ms = max(0.1, (prompt_tokens / prompt_tps) * 1000.0)
-            prompt_ms_per_tok = (1000.0 / prompt_tps) if prompt_tps > 0 else (ttft_ms / prompt_tokens)
 
-            if gen_tps > 0:
-                throughput_tok_s = gen_tps
-                per_token_lat_ms = 1000.0 / gen_tps
-                eval_total_ms = per_token_lat_ms * eval_tokens
-
-        # 2. Parsing da stderr (se presenti log classici prompt eval time / eval time)
+        # Calcolo del TTFT reale (priorità al timestamp hardware del primo token post-prompt)
         if ttft_ms <= 0.0:
-            m_prompt = PROMPT_EVAL_RE.search(stderr_text)
-            if m_prompt:
-                ttft_ms = float(m_prompt.group(1))
-                prompt_tokens = int(m_prompt.group(2))
-                prompt_ms_per_tok = float(m_prompt.group(3))
+            if token_timestamps:
+                raw_ttft = (token_timestamps[0] - t_start_perf) * 1000.0
+                if raw_ttft >= 5.0:
+                    ttft_ms = raw_ttft
+                elif prompt_tps > 0:
+                    # In caso di timestamp sporcato da eco immediato, calcola il prefill reale con il timer hardware di llama.cpp
+                    ttft_ms = (est_words / prompt_tps) * 1000.0
+                else:
+                    ttft_ms = max(5.0, raw_ttft)
+            elif prompt_tps > 0:
+                ttft_ms = (est_words / prompt_tps) * 1000.0
+            else:
+                ttft_ms = max(5.0, (t_end_perf - t_start_perf) * 1000.0)
 
-        if per_token_lat_ms <= 0.0:
+        # Token di prompt e latenza per token di prompt
+        if prompt_tps > 0:
+            prompt_ms_per_tok = 1000.0 / prompt_tps
+            prompt_tokens = max(1, int(round((ttft_ms / 1000.0) * prompt_tps)))
+        elif prompt_tokens <= 0:
+            prompt_tokens = est_words
+            prompt_ms_per_tok = ttft_ms / prompt_tokens
+
+        # Throughput di generazione e TPOT
+        if gen_tps > 0:
+            throughput_tok_s = gen_tps
+            per_token_lat_ms = 1000.0 / gen_tps
+            eval_total_ms = per_token_lat_ms * eval_tokens
+        else:
             m_eval = EVAL_TIME_RE.search(stderr_text)
             if m_eval:
                 eval_total_ms = float(m_eval.group(1))
                 eval_tokens = int(m_eval.group(2))
                 per_token_lat_ms = float(m_eval.group(3))
                 throughput_tok_s = float(m_eval.group(4))
-
-        # 3. Fallback wall-clock ad alta risoluzione
-        if ttft_ms <= 0.0:
-            if token_timestamps:
-                ttft_ms = max(0.1, (token_timestamps[0] - t_start_perf) * 1000.0)
             else:
-                ttft_ms = max(0.1, (t_end_perf - t_start_perf) * 1000.0)
-            prompt_ms_per_tok = ttft_ms / prompt_tokens
-
-        if per_token_lat_ms <= 0.0:
-            if len(token_timestamps) >= 2:
-                eval_total_ms = max(0.1, (token_timestamps[-1] - token_timestamps[0]) * 1000.0)
-            else:
-                eval_total_ms = max(0.1, (t_end_perf - t_start_perf) * 1000.0 - ttft_ms)
-            per_token_lat_ms = eval_total_ms / eval_tokens
-            throughput_tok_s = 1000.0 / per_token_lat_ms if per_token_lat_ms > 0 else 0.0
+                if len(token_timestamps) >= 2:
+                    eval_total_ms = max(0.1, (token_timestamps[-1] - token_timestamps[0]) * 1000.0)
+                else:
+                    eval_total_ms = max(0.1, (t_end_perf - t_start_perf) * 1000.0 - ttft_ms)
+                per_token_lat_ms = eval_total_ms / eval_tokens
+                throughput_tok_s = 1000.0 / per_token_lat_ms if per_token_lat_ms > 0 else 0.0
 
         # 4. Calcolo dell'Inter-Token Jitter
         jitter_ms = 0.0
