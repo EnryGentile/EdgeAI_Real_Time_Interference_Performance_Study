@@ -700,17 +700,18 @@ class LlamaPersistentSession:
         self.ngl = int(config["n_gpu_layers"])
         self.n_threads = int(config["n_threads"])
         raw_ctx = int(config.get("ctx_size", 1024))
-        # Su Jetson Orin Nano (8GB UMA), LLM-8B richiede KV cache compatta (1024 token, b=256, ub=128)
-        # per non eccedere i blocchi di memoria contigua DMA di nvmap
+        # Su Jetson Orin Nano (8GB UMA), LLM-8B richiede KV cache di 128 MB (-c 1024),
+        # e batch di calcolo ridotti (-b 128 -ub 64) per minimizzare i buffer di calcolo GPU (~60MB invece di ~250MB)
+        # ed evitare frammentazione nvmap/UMA, completando il caricamento in ~7s al primo tentativo senza retry.
         is_8b = "8b" in self.model_path.lower() or "llm" in str(config.get("model_id", "")).lower()
         if self.ngl > 0 and is_8b:
             self.ctx_size = min(raw_ctx, 1024)
-            self.b_size = 256
-            self.ub_size = 128
+            self.b_size = int(config.get("b_size", 128))
+            self.ub_size = int(config.get("ub_size", 64))
         else:
             self.ctx_size = raw_ctx
-            self.b_size = 512
-            self.ub_size = 256
+            self.b_size = int(config.get("b_size", 512))
+            self.ub_size = int(config.get("ub_size", 256))
         self.temperature = float(config.get("temperature", 0.0))
         self.seed = int(config.get("seed", 42))
         self.max_tokens = int(config["max_tokens"])
@@ -742,12 +743,12 @@ class LlamaPersistentSession:
             return
 
         # Tentativi ordinati di allocazione per evitare contesa su nvmap/UMA:
-        # 1. Configurazione richiesta (es. -c 1024 -b 256 -ub 128)
+        # 1. Configurazione richiesta (es. -c 1024 -b 128 -ub 64 -> 128 MB KV cache)
         # 2. Secondo tentativo dopo pulizia memoria e attesa di coalescenza DMA
-        # 3. Fallback a buffer compatto (-c 512 -b 128 -ub 64, con KV cache di soli 64 MB)
+        # 3. Fallback di sicurezza a buffer ultra compatto (-c 512 -b 128 -ub 64)
         attempts = [
             (self.ctx_size, self.b_size, self.ub_size),
-            (min(self.ctx_size, 1024), min(self.b_size, 256), min(self.ub_size, 128)),
+            (min(self.ctx_size, 1024), 128, 64),
             (min(self.ctx_size, 512), 128, 64)
         ]
 
@@ -1244,9 +1245,12 @@ def _run_llama_cli_once(
     ngl = override_ngl if override_ngl is not None else config["n_gpu_layers"]
     n_threads = override_threads if override_threads is not None else config["n_threads"]
     raw_ctx = int(config.get("ctx_size", 1024))
-    ctx_size = override_ctx_size if override_ctx_size is not None else (min(raw_ctx, 1024) if ngl > 0 else raw_ctx)
-    b_size = override_batch if override_batch is not None else 256
-    ub_size = override_ubatch if override_ubatch is not None else 128
+    is_8b = "8b" in str(config.get("model_path", "")).lower() or "llm" in str(config.get("model_id", "")).lower()
+    ctx_size = override_ctx_size if override_ctx_size is not None else (min(raw_ctx, 1024) if (ngl > 0 and is_8b) else raw_ctx)
+    default_b = 128 if (ngl > 0 and is_8b) else 512
+    default_ub = 64 if (ngl > 0 and is_8b) else 256
+    b_size = override_batch if override_batch is not None else int(config.get("b_size", default_b))
+    ub_size = override_ubatch if override_ubatch is not None else int(config.get("ub_size", default_ub))
 
     # Libera la Linux VFS Page Cache del file GGUF prima di allocare i buffer CUDA su UMA
     reclaim_unified_memory(config.get("model_path"))
@@ -1531,8 +1535,8 @@ def run_single_llama_task(
                     duration_mode=duration_mode,
                     task_timeout_sec=task_timeout_sec,
                     override_ctx_size=1024,
-                    override_batch=256,
-                    override_ubatch=128
+                    override_batch=128,
+                    override_ubatch=64
                 )
                 print("   [RETRY GPU OK] Task completato con successo su GPU al secondo tentativo.")
                 return res

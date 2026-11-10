@@ -223,6 +223,8 @@ class RunConfig:
     n_threads: int
     example_cmd: List[str]
     ctx_size: int = 2048
+    b_size: int = 512
+    ub_size: int = 256
     stressor_methods: Optional[List[str]] = None
     no_ssh: bool = False
 
@@ -717,12 +719,12 @@ def instantiate_run(
         resolved_max_tokens = max_tokens if (max_tokens is not None and max_tokens > 0) else bench_info["default_max_tokens"]
         temperature = 0.0
 
-        # Su Jetson Orin Nano (8GB UMA), LLM-8B su GPU richiede -c 1024 -b 256 -ub 128
-        # per allocare la KV cache nei buffer DMA contigui di nvmap senza rischio di ENOMEM
+        # Su Jetson Orin Nano (8GB UMA), LLM-8B su GPU richiede -c 1024 (128 MB KV cache), -b 128 -ub 64
+        # per minimizzare i buffer di calcolo GPU e allocare al primo tentativo in pochi secondi senza ENOMEM
         is_8b_gpu = (d_clean == "gpu") and (model_key in ("llm", "8b") or "8b" in model_info["id"].lower())
         resolved_ctx = min(ctx_size, 1024) if is_8b_gpu else ctx_size
-        resolved_b = 256 if is_8b_gpu else 512
-        resolved_ub = 128 if is_8b_gpu else 256
+        resolved_b = 128 if is_8b_gpu else 512
+        resolved_ub = 64 if is_8b_gpu else 256
 
         example_cmd = [
             str(llama_cli),
@@ -766,6 +768,8 @@ def instantiate_run(
             n_threads=n_threads,
             example_cmd=example_cmd,
             ctx_size=resolved_ctx,
+            b_size=resolved_b,
+            ub_size=resolved_ub,
             stressor_methods=s_methods,
             no_ssh=no_ssh
         )
