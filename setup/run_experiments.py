@@ -17,11 +17,6 @@ Ottimizzato e protetto con gestione completa degli errori in runtime (try/except
 import os
 import re
 import sys
-
-# Su NVIDIA Jetson (architettura UMA), forza l'allocatore CUDA di GGML a usare cudaMallocManaged
-# evitando che cudaMalloc fallisca per esaurimento del carveout Tegra nvmap (errore 12 ENOMEM)
-os.environ["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
-
 import csv
 import time
 import math
@@ -537,6 +532,66 @@ def cleanup_orphan_stressors():
         pass
 
 
+def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = True):
+    """
+    Rilascia attivamente la memoria unificata (UMA) su NVIDIA Jetson:
+      1. Se kill_llama=True, termina eventuali processi llama-cli / llama-server rimasti appesi.
+      2. Sincronizza i filesystem buffer (os.sync).
+      3. Rimuove i file GGUF dalla Linux VFS Page Cache tramite posix_fadvise(POSIX_FADV_DONTNEED)
+         (non richiede privilegi di root e libera fino a 4.6 GB di RAM occupata dalla page cache
+         mentre il modello rimane allocato nella VRAM della GPU).
+      4. Se kill_llama=True, tenta il drop delle cache kernel se sudo passwordless è attivo.
+    """
+    if kill_llama:
+        try:
+            if os.name != "nt" and shutil.which("pkill"):
+                subprocess.run(["pkill", "-9", "-f", "llama-cli"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["pkill", "-9", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception:
+            pass
+
+    if hasattr(os, "sync"):
+        try:
+            os.sync()
+        except Exception:
+            pass
+
+    if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
+        gguf_targets: List[Path] = []
+        if model_path:
+            gguf_targets.append(Path(model_path))
+        models_dir = PROJECT_ROOT / "models"
+        if models_dir.exists():
+            gguf_targets.extend(models_dir.glob("*.gguf"))
+
+        seen_paths = set()
+        for p in gguf_targets:
+            try:
+                resolved = str(p.resolve())
+                if resolved in seen_paths or not p.exists():
+                    continue
+                seen_paths.add(resolved)
+                fd = os.open(resolved, os.O_RDONLY)
+                try:
+                    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+                finally:
+                    os.close(fd)
+            except Exception:
+                pass
+
+    if kill_llama and os.name != "nt":
+        try:
+            subprocess.run(
+                ["sudo", "-n", "sysctl", "-w", "vm.drop_caches=3"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False
+            )
+        except Exception:
+            pass
+
+
 # ==============================================================================
 # ESECUZIONE SINGOLO TASK CON llama-cli, TIMEOUT E FALLBACK AUTOMATICO
 # ==============================================================================
@@ -546,6 +601,10 @@ PROMPT_EVAL_RE = re.compile(
 )
 EVAL_TIME_RE = re.compile(
     r"(?<!prompt )eval time\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s*(?:runs|tokens)\s*\(\s*([\d.]+)\s*ms per token,\s*([\d.]+)\s*tokens per second\)",
+    re.IGNORECASE
+)
+TURN_STATS_RE = re.compile(
+    r"\[\s*Prompt:\s*([0-9]+(?:[.,][0-9]+)?)\s*t/s\s*\|\s*Generation:\s*([0-9]+(?:[.,][0-9]+)?)\s*t/s\s*\]",
     re.IGNORECASE
 )
 
@@ -581,11 +640,18 @@ def clean_llama_response(raw_text: str, prompt: str) -> str:
             content_lines.append(line)
         text = "\n".join(content_lines)
 
-    # 3. Rimuove l'echo del prompt se stampato prima della risposta
+    # 3. Rimuove l'echo del prompt (sia multi-linea che single-line) o del comando /clear
     clean_p = prompt.strip()
-    if clean_p and clean_p in text:
-        text = text.split(clean_p, 1)[-1]
-    elif text.startswith("> "):
+    single_p = " ".join(l.strip() for l in prompt.splitlines() if l.strip())
+    for candidate_p in (clean_p, single_p):
+        if candidate_p and candidate_p in text:
+            text = text.split(candidate_p, 1)[-1]
+            break
+
+    text = re.sub(r"^\s*>\s*/clear\s*", "", text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r"^\s*/clear\s*", "", text, flags=re.IGNORECASE | re.MULTILINE)
+
+    if text.startswith("> "):
         lines = text.splitlines()
         filtered = [l for l in lines if not l.startswith("> ")]
         text = "\n".join(filtered)
@@ -600,6 +666,439 @@ def clean_llama_response(raw_text: str, prompt: str) -> str:
     # 6. Rimuove righe isolate contenenti solo '>'
     cleaned_lines = [l for l in text.splitlines() if l.strip() != ">"]
     return "\n".join(cleaned_lines).strip()
+
+
+class LlamaPersistentSession:
+    """
+    Mantiene una singola istanza persistente di llama-cli per l'intero esperimento:
+      - Carica il modello GGUF in VRAM/RAM una sola volta all'inizio dell'esperimento.
+      - Rilascia subito dopo la Linux VFS Page Cache del file GGUF (posix_fadvise DONTNEED)
+        così i pesi restano in GPU senza occupare due volte la memoria unificata (UMA).
+      - Tra un task e il successivo invia '/clear' su stdin per azzerare e riallocare
+        esclusivamente la KV cache e la history, senza deallocare/ricaricare il modello GGUF.
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.llama_bin = str(config["llama_cli_path"])
+        self.model_path = str(config["model_path"])
+        self.ngl = int(config["n_gpu_layers"])
+        self.n_threads = int(config["n_threads"])
+        self.ctx_size = int(config.get("ctx_size", 2048))
+        self.b_size = 512
+        self.ub_size = 256
+        self.temperature = float(config.get("temperature", 0.0))
+        self.seed = int(config.get("seed", 42))
+        self.max_tokens = int(config["max_tokens"])
+
+        self.proc: Optional[subprocess.Popen] = None
+        self._lock = threading.Lock()
+        self._boot_stdout_bytes = bytearray()
+        self._turn_stdout_bytes = bytearray()
+        self._stderr_bytes = bytearray()
+        self._token_timestamps: List[float] = []
+        self._first_token_seen = threading.Event()
+        self._turn_done_event = threading.Event()
+        self._collecting_turn = False
+        self._stats_seen_at: Optional[float] = None
+        self._current_prompt_prefix: str = ""
+        self._stress_proc: Optional[subprocess.Popen] = None
+        self._active_stress_cmd: Optional[List[str]] = None
+        self._active_duration_mode: str = "t_tot"
+        self.tasks_completed: int = 0
+
+    def is_alive(self) -> bool:
+        return self.proc is not None and self.proc.poll() is None
+
+    def start(self, load_timeout_sec: int = 180):
+        """Avvia llama-cli in modalità interattiva e attende il caricamento del GGUF in GPU/CPU."""
+        if self.is_alive():
+            return
+
+        try:
+            self._start_process(self.ctx_size, self.b_size, self.ub_size, load_timeout_sec)
+        except Exception as first_err:
+            if self.ngl > 0 and self.ctx_size > 1024:
+                print(
+                    f"\n   [WARNING] Allocazione iniziale KV cache (-c {self.ctx_size}) fallita ({first_err}). "
+                    "Pulizia memoria UMA e retry con -c 1024 -b 256 -ub 128..."
+                )
+                self.close()
+                time.sleep(2.0)
+                self.ctx_size = 1024
+                self.b_size = 256
+                self.ub_size = 128
+                self._start_process(self.ctx_size, self.b_size, self.ub_size, load_timeout_sec)
+            else:
+                raise
+
+    def _start_process(self, ctx_s: int, b_s: int, ub_s: int, load_timeout_sec: int):
+        reclaim_unified_memory(self.model_path, kill_llama=True)
+
+        cmd = [
+            self.llama_bin,
+            "-m", self.model_path,
+            "-c", str(ctx_s),
+            "-b", str(b_s),
+            "-ub", str(ub_s),
+            "-ngl", str(self.ngl),
+            "-t", str(self.n_threads),
+            "--temp", str(self.temperature),
+            "-s", str(self.seed),
+            "-n", str(self.max_tokens),
+        ]
+
+        env = os.environ.copy()
+        env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
+        env["LC_NUMERIC"] = "C"
+
+        preexec = os.setsid if os.name != "nt" else None
+
+        with self._lock:
+            self._boot_stdout_bytes.clear()
+            self._turn_stdout_bytes.clear()
+            self._stderr_bytes.clear()
+            self._token_timestamps.clear()
+            self._first_token_seen.clear()
+            self._turn_done_event.clear()
+            self._collecting_turn = False
+            self._stats_seen_at = None
+            self.tasks_completed = 0
+
+        self.proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            preexec_fn=preexec,
+            env=env
+        )
+
+        stdout_fd = self.proc.stdout.fileno()
+        stderr_fd = self.proc.stderr.fileno()
+
+        def _stdout_reader():
+            try:
+                while True:
+                    chunk = os.read(stdout_fd, 1024)
+                    if not chunk:
+                        break
+                    now_t = time.perf_counter()
+                    with self._lock:
+                        if not self._collecting_turn:
+                            self._boot_stdout_bytes.extend(chunk)
+                        else:
+                            self._turn_stdout_bytes.extend(chunk)
+                            curr_text = self._turn_stdout_bytes.decode("utf-8", errors="replace")
+                            m_stats = TURN_STATS_RE.search(curr_text)
+                            if m_stats:
+                                if self._stats_seen_at is None:
+                                    self._stats_seen_at = time.monotonic()
+                                if ">" in curr_text[m_stats.end():]:
+                                    self._turn_done_event.set()
+                            else:
+                                chunk_str = chunk.decode("utf-8", errors="ignore")
+                                stripped = chunk_str.strip()
+                                if (
+                                    stripped
+                                    and stripped != ">"
+                                    and "\x08" not in chunk_str
+                                    and not (self._current_prompt_prefix and self._current_prompt_prefix in chunk_str)
+                                ):
+                                    self._token_timestamps.append(now_t)
+                                    if not self._first_token_seen.is_set():
+                                        self._first_token_seen.set()
+                                        if self._active_stress_cmd and self._active_duration_mode == "t_prefill":
+                                            stop_process_tree(self._stress_proc)
+                                            self._stress_proc = None
+                                        elif self._active_stress_cmd and self._active_duration_mode == "t_decode":
+                                            try:
+                                                self._stress_proc = subprocess.Popen(
+                                                    self._active_stress_cmd,
+                                                    stdout=subprocess.DEVNULL,
+                                                    stderr=subprocess.DEVNULL,
+                                                    stdin=subprocess.DEVNULL,
+                                                    preexec_fn=preexec
+                                                )
+                                            except Exception as e_dec:
+                                                log_fallback_error("start_stress_ng_decode", e_dec)
+            except Exception:
+                pass
+
+        def _stderr_reader():
+            try:
+                while True:
+                    chunk = os.read(stderr_fd, 1024)
+                    if not chunk:
+                        break
+                    with self._lock:
+                        self._stderr_bytes.extend(chunk)
+            except Exception:
+                pass
+
+        threading.Thread(target=_stdout_reader, daemon=True).start()
+        threading.Thread(target=_stderr_reader, daemon=True).start()
+
+        deadline = time.monotonic() + max(30, load_timeout_sec)
+        ready = False
+        while time.monotonic() < deadline:
+            if self.proc.poll() is not None:
+                with self._lock:
+                    err_txt = self._stderr_bytes.decode("utf-8", errors="replace")
+                    out_txt = self._boot_stdout_bytes.decode("utf-8", errors="replace")
+                details = err_txt[-2500:].strip() or out_txt[-2500:].strip()
+                raise RuntimeError(
+                    f"llama-cli terminato durante il caricamento del modello (codice {self.proc.returncode}). Dettagli: {details}"
+                )
+
+            with self._lock:
+                boot_txt = self._boot_stdout_bytes.decode("utf-8", errors="replace")
+                err_txt = self._stderr_bytes.decode("utf-8", errors="replace")
+
+            if (
+                "Error: the server exited before becoming ready" in boot_txt
+                or "Error: the server exited before becoming ready" in err_txt
+                or "failed to initialize the context" in err_txt
+            ):
+                time.sleep(0.2)
+                self.close()
+                details = err_txt[-2500:].strip() or boot_txt[-2500:].strip()
+                raise RuntimeError(f"llama-cli non riuscito ad allocare il contesto GPU/CPU. Dettagli: {details}")
+
+            if "available commands:" in boot_txt:
+                after_cmd = boot_txt.split("available commands:", 1)[1]
+                if ">" in after_cmd:
+                    ready = True
+                    break
+
+            time.sleep(0.05)
+
+        if not ready:
+            self.close()
+            raise TimeoutError(f"Timeout ({load_timeout_sec}s) durante il caricamento iniziale del modello GGUF.")
+
+        # Una volta che il GGUF è stato caricato nella VRAM della GPU, rilascia la VFS Page Cache
+        # del file GGUF senza terminare llama-cli (kill_llama=False).
+        reclaim_unified_memory(self.model_path, kill_llama=False)
+
+    def reset_kv_cache(self):
+        """
+        Invia '/clear' alla sessione interattiva di llama-cli per svuotare la KV cache
+        e azzerare la history prima del nuovo task, mantenendo il modello GGUF in GPU.
+        """
+        if not self.is_alive() or self.proc.stdin is None:
+            return
+
+        with self._lock:
+            self._collecting_turn = False
+            self._boot_stdout_bytes.clear()
+            self._turn_stdout_bytes.clear()
+
+        try:
+            self.proc.stdin.write(b"/clear\n")
+            self.proc.stdin.flush()
+        except Exception:
+            return
+
+        clear_deadline = time.monotonic() + 1.5
+        while time.monotonic() < clear_deadline:
+            with self._lock:
+                txt = self._boot_stdout_bytes.decode("utf-8", errors="replace")
+            if ">" in txt:
+                time.sleep(0.05)
+                break
+            time.sleep(0.02)
+
+        with self._lock:
+            self._boot_stdout_bytes.clear()
+            self._turn_stdout_bytes.clear()
+
+    def run_task(
+        self,
+        prompt: str,
+        stress_cmd: Optional[List[str]],
+        duration_mode: str,
+        task_timeout_sec: int
+    ) -> Dict[str, Any]:
+        """Esegue un singolo task nella sessione persistente, pulendo la KV cache prima dell'invio."""
+        if not self.is_alive():
+            self.start()
+
+        if self.tasks_completed > 0:
+            self.reset_kv_cache()
+
+        prompt_line = " ".join(line.strip() for line in prompt.splitlines() if line.strip())
+        preexec = os.setsid if os.name != "nt" else None
+
+        with self._lock:
+            self._boot_stdout_bytes.clear()
+            self._turn_stdout_bytes.clear()
+            self._stderr_bytes.clear()
+            self._token_timestamps.clear()
+            self._first_token_seen.clear()
+            self._turn_done_event.clear()
+            self._stats_seen_at = None
+            self._current_prompt_prefix = prompt_line[:32]
+            self._active_stress_cmd = stress_cmd
+            self._active_duration_mode = duration_mode
+            self._collecting_turn = True
+
+        t_start_mono = time.monotonic()
+        t_start_perf = time.perf_counter()
+
+        if stress_cmd and duration_mode in ("t_prefill", "t_tot"):
+            try:
+                self._stress_proc = subprocess.Popen(
+                    stress_cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    preexec_fn=preexec
+                )
+            except Exception as e:
+                log_fallback_error("start_stress_ng_prefill", e)
+
+        try:
+            self.proc.stdin.write((prompt_line + "\n").encode("utf-8"))
+            self.proc.stdin.flush()
+
+            deadline = time.monotonic() + max(10, task_timeout_sec)
+            while True:
+                if self._turn_done_event.wait(timeout=0.05):
+                    break
+
+                with self._lock:
+                    stats_t = self._stats_seen_at
+                if stats_t is not None and (time.monotonic() - stats_t) >= 0.25:
+                    break
+
+                if self.proc.poll() is not None:
+                    with self._lock:
+                        err_txt = self._stderr_bytes.decode("utf-8", errors="replace")
+                        out_txt = self._turn_stdout_bytes.decode("utf-8", errors="replace")
+                    details = err_txt[-2500:].strip() or out_txt[-2500:].strip()
+                    raise RuntimeError(
+                        f"llama-cli terminato inaspettatamente durante il task (codice {self.proc.returncode}). Dettagli: {details}"
+                    )
+
+                if time.monotonic() > deadline:
+                    self.close()
+                    raise TimeoutError(f"Task llama-cli scaduto per timeout (>{task_timeout_sec}s).")
+
+        finally:
+            with self._lock:
+                self._collecting_turn = False
+                stdout_text = self._turn_stdout_bytes.decode("utf-8", errors="replace")
+                stderr_text = self._stderr_bytes.decode("utf-8", errors="replace")
+                token_timestamps = list(self._token_timestamps)
+            stop_process_tree(self._stress_proc)
+            self._stress_proc = None
+
+        t_end_mono = time.monotonic()
+        t_end_perf = time.perf_counter()
+        self.tasks_completed += 1
+
+        clean_resp = clean_llama_response(stdout_text, prompt)
+        prompt_tokens = max(1, len(prompt_line.split()))
+        eval_tokens = max(1, len(token_timestamps) or len(clean_resp.split()))
+
+        ttft_ms = 0.0
+        prompt_ms_per_tok = 0.0
+        eval_total_ms = 0.0
+        per_token_lat_ms = 0.0
+        throughput_tok_s = 0.0
+
+        # 1. Parsing da [ Prompt: X t/s | Generation: Y t/s ] (formato interattivo llama-cli b1-202c1a2)
+        m_turn = TURN_STATS_RE.search(stdout_text)
+        if m_turn:
+            prompt_tps = float(m_turn.group(1).replace(",", "."))
+            gen_tps = float(m_turn.group(2).replace(",", "."))
+            if token_timestamps:
+                ttft_ms = max(0.1, (token_timestamps[0] - t_start_perf) * 1000.0)
+            elif prompt_tps > 0:
+                ttft_ms = max(0.1, (prompt_tokens / prompt_tps) * 1000.0)
+            prompt_ms_per_tok = (1000.0 / prompt_tps) if prompt_tps > 0 else (ttft_ms / prompt_tokens)
+
+            if gen_tps > 0:
+                throughput_tok_s = gen_tps
+                per_token_lat_ms = 1000.0 / gen_tps
+                eval_total_ms = per_token_lat_ms * eval_tokens
+
+        # 2. Parsing da stderr (se presenti log classici prompt eval time / eval time)
+        if ttft_ms <= 0.0:
+            m_prompt = PROMPT_EVAL_RE.search(stderr_text)
+            if m_prompt:
+                ttft_ms = float(m_prompt.group(1))
+                prompt_tokens = int(m_prompt.group(2))
+                prompt_ms_per_tok = float(m_prompt.group(3))
+
+        if per_token_lat_ms <= 0.0:
+            m_eval = EVAL_TIME_RE.search(stderr_text)
+            if m_eval:
+                eval_total_ms = float(m_eval.group(1))
+                eval_tokens = int(m_eval.group(2))
+                per_token_lat_ms = float(m_eval.group(3))
+                throughput_tok_s = float(m_eval.group(4))
+
+        # 3. Fallback wall-clock ad alta risoluzione
+        if ttft_ms <= 0.0:
+            if token_timestamps:
+                ttft_ms = max(0.1, (token_timestamps[0] - t_start_perf) * 1000.0)
+            else:
+                ttft_ms = max(0.1, (t_end_perf - t_start_perf) * 1000.0)
+            prompt_ms_per_tok = ttft_ms / prompt_tokens
+
+        if per_token_lat_ms <= 0.0:
+            if len(token_timestamps) >= 2:
+                eval_total_ms = max(0.1, (token_timestamps[-1] - token_timestamps[0]) * 1000.0)
+            else:
+                eval_total_ms = max(0.1, (t_end_perf - t_start_perf) * 1000.0 - ttft_ms)
+            per_token_lat_ms = eval_total_ms / eval_tokens
+            throughput_tok_s = 1000.0 / per_token_lat_ms if per_token_lat_ms > 0 else 0.0
+
+        # 4. Calcolo dell'Inter-Token Jitter
+        jitter_ms = 0.0
+        if len(token_timestamps) >= 3:
+            inter_token_deltas_ms = [
+                (token_timestamps[i] - token_timestamps[i - 1]) * 1000.0
+                for i in range(2, len(token_timestamps))
+            ]
+            if len(inter_token_deltas_ms) >= 2:
+                jitter_ms = statistics.stdev(inter_token_deltas_ms)
+            elif len(inter_token_deltas_ms) == 1:
+                jitter_ms = abs(inter_token_deltas_ms[0] - per_token_lat_ms)
+
+        return {
+            "t_start_mono": t_start_mono,
+            "t_end_mono": t_end_mono,
+            "duration_s": round(t_end_mono - t_start_mono, 4),
+            "prompt_tokens": prompt_tokens,
+            "output_tokens": eval_tokens,
+            "ttft_ms": round(ttft_ms, 4),
+            "prompt_ms_per_tok": round(prompt_ms_per_tok, 4),
+            "eval_total_ms": round(eval_total_ms, 4),
+            "per_token_lat_ms": round(per_token_lat_ms, 4),
+            "throughput_tok_s": round(throughput_tok_s, 4),
+            "jitter_ms": round(jitter_ms, 4),
+            "response_text": clean_resp,
+        }
+
+    def close(self):
+        """Chiude pulitamente la sessione interattiva di llama-cli e libera la memoria UMA."""
+        stop_process_tree(self._stress_proc)
+        self._stress_proc = None
+        if self.proc is not None:
+            try:
+                if self.proc.poll() is None and self.proc.stdin is not None:
+                    self.proc.stdin.write(b"/exit\n")
+                    self.proc.stdin.flush()
+                    self.proc.wait(timeout=3)
+            except Exception:
+                pass
+            stop_process_tree(self.proc)
+            self.proc = None
+        reclaim_unified_memory(self.model_path, kill_llama=True)
 
 
 def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
@@ -654,20 +1153,29 @@ def _run_llama_cli_once(
     duration_mode: str,
     task_timeout_sec: int,
     override_ngl: Optional[int] = None,
-    override_threads: Optional[int] = None
+    override_threads: Optional[int] = None,
+    override_ctx_size: Optional[int] = None,
+    override_batch: Optional[int] = None,
+    override_ubatch: Optional[int] = None
 ) -> Dict[str, float]:
     """Esegue una singola invocazione di llama-cli con watchdog di timeout e fallback wall-clock."""
     llama_bin = config["llama_cli_path"]
     ngl = override_ngl if override_ngl is not None else config["n_gpu_layers"]
     n_threads = override_threads if override_threads is not None else config["n_threads"]
-    ctx_size = int(config.get("ctx_size", 2048))
+    raw_ctx = int(config.get("ctx_size", 1024))
+    ctx_size = override_ctx_size if override_ctx_size is not None else (min(raw_ctx, 1024) if ngl > 0 else raw_ctx)
+    b_size = override_batch if override_batch is not None else 256
+    ub_size = override_ubatch if override_ubatch is not None else 128
+
+    # Libera la Linux VFS Page Cache del file GGUF prima di allocare i buffer CUDA su UMA
+    reclaim_unified_memory(config.get("model_path"))
 
     cmd = [
         llama_bin,
         "-m", config["model_path"],
         "-c", str(ctx_size),
-        "-b", "512",
-        "-ub", "256",
+        "-b", str(b_size),
+        "-ub", str(ub_size),
         "-ngl", str(ngl),
         "-t", str(n_threads),
         "--temp", str(config["temperature"]),
@@ -680,9 +1188,8 @@ def _run_llama_cli_once(
     llama_proc: Optional[subprocess.Popen] = None
     preexec = os.setsid if os.name != "nt" else None
 
-    # Assicura che l'ambiente per il processo figlio abbia GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
     env = os.environ.copy()
-    env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+    env.pop("GGML_CUDA_ENABLE_UNIFIED_MEMORY", None)
 
     t_start_mono = time.monotonic()
     t_start_perf = time.perf_counter()
@@ -796,6 +1303,7 @@ def _run_llama_cli_once(
     finally:
         stop_process_tree(stress_proc)
         stop_process_tree(llama_proc)
+        reclaim_unified_memory(config.get("model_path"))
 
     t_end_mono = time.monotonic()
     t_end_perf = time.perf_counter()
@@ -876,16 +1384,26 @@ def run_single_llama_task(
     stress_cmd: Optional[List[str]] = None,
     duration_mode: str = "t_tot",
     task_timeout_sec: int = 300,
-    exp_id: str = "N/A"
+    exp_id: str = "N/A",
+    session: Optional[LlamaPersistentSession] = None
 ) -> Optional[Dict[str, Any]]:
     """
     Esegue un singolo task su llama-cli con timeout di 5 minuti (300s):
+      - Se viene fornita una LlamaPersistentSession attiva, mantiene il modello GGUF
+        allocato in VRAM/RAM e resetta solo la KV cache (/clear) prima del nuovo task.
       - Se il task supera il timeout di 5 minuti (300s), il processo viene sospeso/terminato
         e la funzione restituisce None per passare immediatamente al task successivo.
       - Se il device è GPU e si verifica un errore di esecuzione GPU, lo script fallisce
         e riporta l'errore (nessun passaggio silenzioso a CPU).
     """
     try:
+        if session is not None:
+            return session.run_task(
+                prompt=prompt,
+                stress_cmd=stress_cmd,
+                duration_mode=duration_mode,
+                task_timeout_sec=task_timeout_sec
+            )
         return _run_llama_cli_once(
             config=config,
             prompt=prompt,
@@ -902,21 +1420,38 @@ def run_single_llama_task(
         log_fallback_error("run_single_llama_task_error", err, exp_id=exp_id)
         cleanup_orphan_stressors()
         if str(config.get("device", "")).lower() == "gpu":
-            # In caso di errore temporaneo di allocazione GPU (es. rilascio asincrono buffer Tegra nvmap), effettua 1 retry dopo 3s
-            print(f"\n   [WARNING] Errore esecuzione GPU nel task ({err}). Attesa 3s per rilascio memoria e retry...")
-            time.sleep(3.0)
-            if hasattr(os, "sync"):
+            print(f"\n   [WARNING] Errore esecuzione GPU nel task ({err}). Riavvio sessione GPU e retry del task...")
+            if session is not None:
+                session.close()
+                time.sleep(2.0)
                 try:
-                    os.sync()
-                except Exception:
-                    pass
+                    session.start()
+                    res = session.run_task(
+                        prompt=prompt,
+                        stress_cmd=stress_cmd,
+                        duration_mode=duration_mode,
+                        task_timeout_sec=task_timeout_sec
+                    )
+                    print("   [RETRY GPU OK] Task completato con successo su GPU al secondo tentativo.")
+                    return res
+                except Exception as second_gpu_err:
+                    log_fallback_error("run_single_llama_task_gpu_retry_failed", second_gpu_err, exp_id=exp_id)
+                    raise ExperimentRuntimeError(
+                        f"Errore di esecuzione su device GPU durante il task: {second_gpu_err}"
+                    ) from second_gpu_err
+
+            reclaim_unified_memory(config.get("model_path"))
+            time.sleep(3.0)
             try:
                 res = _run_llama_cli_once(
                     config=config,
                     prompt=prompt,
                     stress_cmd=stress_cmd,
                     duration_mode=duration_mode,
-                    task_timeout_sec=task_timeout_sec
+                    task_timeout_sec=task_timeout_sec,
+                    override_ctx_size=1024,
+                    override_batch=256,
+                    override_ubatch=128
                 )
                 print("   [RETRY GPU OK] Task completato con successo su GPU al secondo tentativo.")
                 return res
@@ -929,6 +1464,29 @@ def run_single_llama_task(
         # Solo se siamo su CPU, effettua 1 tentativo di fallback prima di arrestare lo script
         print(f"\n   [WARNING] Errore runtime nel task su CPU ({err}). Avvio singolo tentativo di fallback...")
         time.sleep(3.0)
+        if session is not None:
+            session.close()
+            try:
+                session.start()
+                res = session.run_task(
+                    prompt=prompt,
+                    stress_cmd=stress_cmd,
+                    duration_mode=duration_mode,
+                    task_timeout_sec=task_timeout_sec
+                )
+                print("   [FALLBACK OK] Task recuperato con successo.")
+                return res
+            except TimeoutError as te2:
+                log_fallback_error("task_timeout_suspended_after_retry", te2, exp_id=exp_id)
+                cleanup_orphan_stressors()
+                print(f"\n   [TIMEOUT > {task_timeout_sec}s] {te2} -> Task sospeso, passaggio al task successivo.")
+                return None
+            except Exception as second_err:
+                log_fallback_error("run_single_llama_task_fallback_failed", second_err, exp_id=exp_id)
+                raise ExperimentRuntimeError(
+                    f"Fallimento critico del task: {second_err}"
+                ) from second_err
+
         fallback_threads = max(1, int(config.get("n_threads", 4)) // 2)
         try:
             res = _run_llama_cli_once(
@@ -1446,6 +2004,7 @@ def execute_experiment(
 ) -> List[Tuple[Path, str]]:
     """Esegue tutti i sample_count task previsti per l'esperimento corrente con protezione try/except."""
     monitor: Optional[SystemMonitor] = None
+    llama_session: Optional[LlamaPersistentSession] = None
     task_records: List[Dict[str, Any]] = []
     responses_log: List[Dict[str, Any]] = []
 
@@ -1484,6 +2043,11 @@ def execute_experiment(
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
+        print(" [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
+        llama_session = LlamaPersistentSession(config)
+        llama_session.start()
+        print(" [OK] Modello GGUF allocato. Tra un task e il successivo verrà resettata solo la KV cache (/clear).")
+
         monitor = SystemMonitor()
         monitor.start()
 
@@ -1509,7 +2073,8 @@ def execute_experiment(
                 stress_cmd=stress_cmd,
                 duration_mode=exp["duration"],
                 task_timeout_sec=task_timeout_sec,
-                exp_id=exp["exp_id"]
+                exp_id=exp["exp_id"],
+                session=llama_session
             )
 
             # Se il task ha superato il timeout di 5 minuti (300s), viene sospeso e si passa al successivo
@@ -1570,15 +2135,12 @@ def execute_experiment(
                 f"Jitter={metrics['jitter_ms']:.2f}ms"
             )
 
-            # Cooldown tra task consecutivi per rilasciare socket in TIME_WAIT e deallocare RAM
-            time.sleep(1.5)
+            time.sleep(0.3)
             cleanup_orphan_stressors()
-            if hasattr(os, "sync"):
-                try:
-                    os.sync()
-                except Exception:
-                    pass
 
+        if llama_session is not None:
+            llama_session.close()
+            llama_session = None
         monitor.stop()
         cleanup_orphan_stressors()
 
@@ -1733,6 +2295,11 @@ def execute_experiment(
         return generated_files
 
     except BaseException as exc:
+        if llama_session is not None:
+            try:
+                llama_session.close()
+            except Exception:
+                pass
         trigger_emergency_fallback(
             config=config,
             state=state,
@@ -1817,7 +2384,7 @@ def parse_args():
         "-c", "--ctx-size",
         type=int,
         default=None,
-        help="Dimensione della finestra di contesto per llama.cpp (default: da run_config.json o 2048)"
+        help="Dimensione della finestra di contesto per llama.cpp (default: da run_config.json o 1024)"
     )
     parser.add_argument(
         "--no-ssh",
@@ -1895,7 +2462,7 @@ def main():
             ssh_dest_in = args.ssh_dest if args.ssh_dest is not None else current_cfg.get("ssh_dest", "./EdgeAI_Results")
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
             ssh_key_in = args.ssh_key if args.ssh_key is not None else current_cfg.get("ssh_key")
-            ctx_size_in = args.ctx_size if args.ctx_size is not None else current_cfg.get("ctx_size", 2048)
+            ctx_size_in = args.ctx_size if args.ctx_size is not None else current_cfg.get("ctx_size", 1024)
             max_tokens_in = args.max_tokens if args.max_tokens is not None else current_cfg.get("max_tokens")
 
             instantiate_run(
