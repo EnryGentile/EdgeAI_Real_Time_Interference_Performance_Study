@@ -41,11 +41,13 @@ MODELS_CONFIG = [
         "role": "SLM (Small Language Model - 1B)",
         "repo": "bartowski/Llama-3.2-1B-Instruct-GGUF",
         "file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+        "min_size_mb": 700,
     },
     {
         "role": "LLM (Large Language Model - 8B)",
         "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
         "file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "min_size_mb": 4500,
     },
 ]
 
@@ -139,7 +141,8 @@ def check_and_download_models():
         model_repo = model_info["repo"]
         model_path = MODELS_DIR / model_file
 
-        if model_path.exists() and model_path.stat().st_size > 100 * (1024 ** 2):
+        min_bytes = model_info.get("min_size_mb", 100) * (1024 ** 2)
+        if model_path.exists() and model_path.stat().st_size >= min_bytes:
             size_gb = model_path.stat().st_size / (1024 ** 3)
             print(f"[OK] Modello {role} già presente ({size_gb:.2f} GB): {model_path}")
             continue

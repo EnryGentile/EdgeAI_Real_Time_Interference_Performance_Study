@@ -773,7 +773,7 @@ def _run_llama_cli_once(
             or "error: the server exited" in stderr_text.lower()
         )
         if llama_proc.returncode != 0 or server_exited_error:
-            err_msg = stderr_text[-500:].strip() or stdout_text[-500:].strip()
+            err_msg = stderr_text[-2500:].strip() or stdout_text[-2500:].strip()
             raise RuntimeError(
                 f"llama-cli terminato con errore (codice {llama_proc.returncode}). Dettagli: {err_msg}"
             )
