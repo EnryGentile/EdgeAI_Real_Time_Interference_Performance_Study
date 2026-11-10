@@ -603,7 +603,6 @@ def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
       - '--single-turn' o '-st': disabilita la chat interattiva a turni multipli.
       - '-no-cnv' o '--no-conversation': disabilita la modalità conversazione automatica.
       - '--perf': assicura la stampa delle statistiche di timing su stderr.
-      - '-fa' o '--flash-attn': riduce il consumo di memoria VRAM e velocizza l'attenzione.
     """
     global _LLAMA_CLI_EXTRA_FLAGS
     if _LLAMA_CLI_EXTRA_FLAGS is not None:
@@ -635,12 +634,6 @@ def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
         # Stampa metriche prestazionali
         if "--perf" in help_text:
             extra.append("--perf")
-
-        # Flash Attention
-        if "--flash-attn" in help_text:
-            extra.append("--flash-attn")
-        elif "-fa" in help_text:
-            extra.append("-fa")
 
     except Exception:
         pass
