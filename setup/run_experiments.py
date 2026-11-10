@@ -534,21 +534,25 @@ def cleanup_orphan_stressors():
 
 def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = True):
     """
-    Rilascia attivamente la memoria unificata (UMA) su NVIDIA Jetson:
-      1. Se kill_llama=True, termina eventuali processi llama-cli / llama-server rimasti appesi.
-      2. Sincronizza i filesystem buffer (os.sync).
-      3. Rimuove i file GGUF dalla Linux VFS Page Cache tramite posix_fadvise(POSIX_FADV_DONTNEED)
-         (non richiede privilegi di root e libera fino a 4.6 GB di RAM occupata dalla page cache
-         mentre il modello rimane allocato nella VRAM della GPU).
-      4. Se kill_llama=True, tenta il drop delle cache kernel se sudo passwordless è attivo.
+    Rilascia attivamente e immediatamente la memoria unificata (UMA) su NVIDIA Jetson:
+      1. Se kill_llama=True, termina eventuali processi llama-cli / llama-server / stress-ng rimasti appesi.
+      2. Forza il garbage collection in Python.
+      3. Sincronizza i filesystem buffer (os.sync).
+      4. Rimuove TUTTI i file GGUF e dataset dalla Linux VFS Page Cache tramite posix_fadvise(POSIX_FADV_DONTNEED)
+         (non richiede privilegi di root e libera istantaneamente gigabyte di RAM occupata dalla page cache).
+      5. Tenta il drop e la compattazione delle cache kernel (drop_caches=3, compact_memory=1).
     """
     if kill_llama:
         try:
             if os.name != "nt" and shutil.which("pkill"):
                 subprocess.run(["pkill", "-9", "-f", "llama-cli"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 subprocess.run(["pkill", "-9", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                subprocess.run(["pkill", "-9", "-f", "stress-ng"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                time.sleep(0.5)
         except Exception:
             pass
+
+    gc.collect()
 
     if hasattr(os, "sync"):
         try:
@@ -557,15 +561,18 @@ def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = 
             pass
 
     if hasattr(os, "posix_fadvise") and hasattr(os, "POSIX_FADV_DONTNEED"):
-        gguf_targets: List[Path] = []
+        targets: List[Path] = []
         if model_path:
-            gguf_targets.append(Path(model_path))
+            targets.append(Path(model_path))
         models_dir = PROJECT_ROOT / "models"
         if models_dir.exists():
-            gguf_targets.extend(models_dir.glob("*.gguf"))
+            targets.extend(models_dir.glob("*.gguf"))
+        datasets_dir = PROJECT_ROOT / "datasets"
+        if datasets_dir.exists():
+            targets.extend(datasets_dir.glob("*.json"))
 
         seen_paths = set()
-        for p in gguf_targets:
+        for p in targets:
             try:
                 resolved = str(p.resolve())
                 if resolved in seen_paths or not p.exists():
@@ -583,6 +590,13 @@ def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = 
         try:
             subprocess.run(
                 ["sudo", "-n", "sysctl", "-w", "vm.drop_caches=3"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False
+            )
+            subprocess.run(
+                ["sudo", "-n", "sysctl", "-w", "vm.compact_memory=1"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=2,
@@ -726,25 +740,41 @@ class LlamaPersistentSession:
         if self.is_alive():
             return
 
-        try:
-            self._start_process(self.ctx_size, self.b_size, self.ub_size, load_timeout_sec)
-        except Exception as first_err:
-            if self.ngl > 0 and self.ctx_size > 1024:
-                print(
-                    f"\n   [WARNING] Allocazione iniziale KV cache (-c {self.ctx_size}) fallita ({first_err}). "
-                    "Pulizia memoria UMA e retry con -c 1024 -b 256 -ub 128..."
-                )
+        # Tentativi ordinati di allocazione per evitare contesa su nvmap/UMA:
+        # 1. Configurazione richiesta (es. -c 1024 -b 256 -ub 128)
+        # 2. Secondo tentativo dopo pulizia memoria e attesa di coalescenza DMA
+        # 3. Fallback a buffer compatto (-c 512 -b 128 -ub 64, con KV cache di soli 64 MB)
+        attempts = [
+            (self.ctx_size, self.b_size, self.ub_size),
+            (min(self.ctx_size, 1024), min(self.b_size, 256), min(self.ub_size, 128)),
+            (min(self.ctx_size, 512), 128, 64)
+        ]
+
+        last_err: Optional[Exception] = None
+        for attempt_idx, (c_s, b_s, ub_s) in enumerate(attempts):
+            try:
+                self._start_process(c_s, b_s, ub_s, load_timeout_sec)
+                self.ctx_size = c_s
+                self.b_size = b_s
+                self.ub_size = ub_s
+                return
+            except Exception as err:
+                last_err = err
                 self.close()
-                time.sleep(2.0)
-                self.ctx_size = 1024
-                self.b_size = 256
-                self.ub_size = 128
-                self._start_process(self.ctx_size, self.b_size, self.ub_size, load_timeout_sec)
-            else:
-                raise
+                if attempt_idx < len(attempts) - 1:
+                    next_c, next_b, next_ub = attempts[attempt_idx + 1]
+                    print(
+                        f"\n   [INFO UMA] Allocazione buffer GPU (-c {c_s}) contesa su nvmap ({err}). "
+                        f"Pulizia memoria UMA, attesa 3s e retry con -c {next_c} -b {next_b} -ub {next_ub}..."
+                    )
+                    time.sleep(3.0)
+
+        if last_err is not None:
+            raise last_err
 
     def _start_process(self, ctx_s: int, b_s: int, ub_s: int, load_timeout_sec: int):
         reclaim_unified_memory(self.model_path, kill_llama=True)
+        time.sleep(1.0)
 
         cmd = [
             self.llama_bin,
@@ -1564,17 +1594,21 @@ def run_single_llama_task(
 # ==============================================================================
 # TRANSITORIO POST-BOOT E REBOOT DELLA BOARD
 # ==============================================================================
-def wait_for_post_boot_transient(wait_seconds: int):
+def wait_for_post_boot_transient(wait_seconds: int, model_path: Optional[str] = None):
     """
     Attende che il transitorio del sistema operativo e termico post-boot si esaurisca
     prima di avviare la raccolta delle metriche con vmstat e llama.cpp.
+    Esegue la pulizia immediata della cache UMA e dei file GGUF all'inizio e alla fine del transitorio.
     """
+    reclaim_unified_memory(model_path, kill_llama=True)
+
     if wait_seconds <= 0:
         return
 
     print("\n" + "-" * 65)
     print(f" [TRANSITORIO] Attesa di {wait_seconds}s per stabilizzazione OS e termica...")
     print("-" * 65)
+    print(" [OK] Pulizia immediata memoria UMA eseguita (file GGUF e Page Cache rilasciati).")
 
     if os.name != "nt":
         try:
@@ -1595,7 +1629,8 @@ def wait_for_post_boot_transient(wait_seconds: int):
         cpu_t, gpu_t, _ = SystemMonitor._read_thermal_zones()
         print(f"   ... transitorio rimanente: {remaining:3d}s | Temp CPU: {cpu_t:.1f}°C | Temp GPU: {gpu_t:.1f}°C")
 
-    print(" [OK] Transitorio terminato. Sistema stabile e pronto per l'esperimento.\n")
+    reclaim_unified_memory(model_path, kill_llama=True)
+    print(" [OK] Transitorio terminato. Memoria pulita e sistema pronto per l'esperimento.\n")
 
 
 def trigger_board_reboot():
@@ -2093,6 +2128,10 @@ def execute_experiment(
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
+        print("\n [PULIZIA UMA] Rilascio preventivo Page Cache e coalescenza memoria...")
+        reclaim_unified_memory(config.get("model_path"), kill_llama=True)
+        time.sleep(1.0)
+
         print(" [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
         llama_session = LlamaPersistentSession(config)
         llama_session.start()
@@ -2575,11 +2614,14 @@ def main():
             print("      Usa '--reset' se vuoi rieseguire la campagna da zero.")
             return
 
+        # Pulizia immediata preventiva all'avvio della sessione
+        reclaim_unified_memory(config.get("model_path"), kill_llama=True)
+
         while pending:
             next_exp = pending[0]
 
             # 1. Attesa transitorio post-boot (default 90s su Jetson Orin)
-            wait_for_post_boot_transient(int(config.get("transient_wait_sec", 90)))
+            wait_for_post_boot_transient(int(config.get("transient_wait_sec", 90)), config.get("model_path"))
 
             # 2. Esecuzione esperimento (protetto da try/except e emergency fallback)
             generated_files = execute_experiment(
