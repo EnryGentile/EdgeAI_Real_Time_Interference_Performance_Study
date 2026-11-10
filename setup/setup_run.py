@@ -222,6 +222,7 @@ class RunConfig:
     max_tokens: int
     n_threads: int
     example_cmd: List[str]
+    ctx_size: int = 2048
     stressor_methods: Optional[List[str]] = None
     no_ssh: bool = False
 
@@ -653,7 +654,8 @@ def instantiate_run(
     ssh_key: Optional[str] = None,
     threads: Optional[int] = None,
     seed: int = 42,
-    no_ssh: bool = False
+    no_ssh: bool = False,
+    ctx_size: int = 2048
 ) -> RunConfig:
     """
     Valida gli argomenti, esegue i check e istanzia la configurazione di esecuzione.
@@ -717,6 +719,7 @@ def instantiate_run(
         example_cmd = [
             str(llama_cli),
             "-m", str(model_path),
+            "-c", str(ctx_size),
             "-ngl", str(n_gpu_layers),
             "-t", str(n_threads),
             "--temp", str(temperature),
@@ -753,6 +756,7 @@ def instantiate_run(
             max_tokens=max_tokens,
             n_threads=n_threads,
             example_cmd=example_cmd,
+            ctx_size=ctx_size,
             stressor_methods=s_methods,
             no_ssh=no_ssh
         )
@@ -913,6 +917,12 @@ def parse_arguments():
         help="Numero di thread CPU da dedicare a llama.cpp (default: core disponibili)"
     )
     parser.add_argument(
+        "-c", "--ctx-size",
+        type=int,
+        default=2048,
+        help="Dimensione della finestra di contesto per llama.cpp (default: 2048, ottimizzato per evitare OOM su Jetson)"
+    )
+    parser.add_argument(
         "--no-ssh",
         action="store_true",
         default=False,
@@ -961,7 +971,8 @@ def parse_arguments():
         args.ssh_port,
         args.ssh_key,
         args.threads,
-        args.no_ssh
+        args.no_ssh,
+        args.ctx_size
     )
 
 
@@ -982,7 +993,8 @@ def main():
             ssh_port_arg,
             ssh_key_arg,
             threads_arg,
-            no_ssh_arg
+            no_ssh_arg,
+            ctx_size_arg
         ) = parse_arguments()
 
         print("\n" + "=" * 65)
@@ -991,7 +1003,7 @@ def main():
         print(
             f" Parametri: Modello='{model_arg}', Device='{device_arg}', Benchmark='{benchmark_arg}', "
             f"Stressor={'ON (' + str(stressor_arg or 'cpu') + ')' if use_stressor_arg else 'OFF (Baseline)'}, "
-            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}, No-SSH={no_ssh_arg}"
+            f"Samples={samples_arg}, Ripetizioni={repetitions_arg}, Context={ctx_size_arg}, No-SSH={no_ssh_arg}"
         )
 
         config = instantiate_run(
@@ -1009,7 +1021,8 @@ def main():
             ssh_port=ssh_port_arg,
             ssh_key=ssh_key_arg,
             threads=threads_arg,
-            no_ssh=no_ssh_arg
+            no_ssh=no_ssh_arg,
+            ctx_size=ctx_size_arg
         )
 
         print("\n" + "=" * 65)
@@ -1031,6 +1044,7 @@ def main():
         else:
             print(f" * Export SSH CSV:    {config.ssh_target}:{config.ssh_dest} (porta {config.ssh_port})")
         print(f" * Runtime:           {config.llama_cli_path} (-t {config.n_threads}, seed={config.seed})")
+        print(f" * Finestra Contesto: {config.ctx_size} token (-c {config.ctx_size})")
         print(f" * File Config:       {CONFIG_OUTPUT_PATH}")
         print("=" * 65)
         print("\nPer avviare la campagna sperimentale esegui: python setup/run_experiments.py\n")

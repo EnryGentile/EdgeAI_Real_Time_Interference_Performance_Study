@@ -316,28 +316,47 @@ def check_and_setup_llama_cpp():
         env["PATH"] = f"{jetson_cuda_bin}:{env.get('PATH', '')}"
 
     nvcc_path = shutil.which("nvcc", path=env.get("PATH"))
-    cmake_cuda_args = ["-B", str(build_dir), "-S", str(LLAMA_CPP_DIR), "-DGGML_CUDA=ON"]
+
+    # Configurazione acceleratori hardware CPU (ARM NEON, FP16 vettoriale, Dot Product su Cortex-A78AE)
+    import platform
+    is_aarch64 = platform.machine().lower() in ("aarch64", "arm64")
+    is_jetson = os.path.exists("/etc/nv_tegra_release") or os.path.exists("/sys/devices/gpu.0") or is_aarch64
+
+    cmake_common_args = ["-B", str(build_dir), "-S", str(LLAMA_CPP_DIR), "-DCMAKE_BUILD_TYPE=Release"]
+    if is_aarch64:
+        cpu_flags = "-march=armv8.2-a+fp16+dotprod -mcpu=native -O3"
+        cmake_common_args += [
+            f"-DCMAKE_C_FLAGS={cpu_flags}",
+            f"-DCMAKE_CXX_FLAGS={cpu_flags}",
+            "-DGGML_OPENMP=ON",
+        ]
+
+    # Configurazione acceleratori hardware GPU (NVIDIA Ampere SM 8.7 Tensor Cores per Jetson Orin)
+    cmake_cuda_args = list(cmake_common_args) + ["-DGGML_CUDA=ON"]
+    if is_jetson:
+        cmake_cuda_args.append("-DCMAKE_CUDA_ARCHITECTURES=87")
     if nvcc_path:
         cmake_cuda_args.append(f"-DCMAKE_CUDA_COMPILER={nvcc_path}")
 
     try:
-        print("Configurazione CMake e compilazione con supporto CUDA...")
+        print("Configurazione CMake e compilazione con acceleratori hardware CUDA (SM 8.7) + CPU (NEON/FP16/DotProd)...")
         subprocess.run(["cmake"] + cmake_cuda_args, env=env, check=True)
         subprocess.run(
             ["cmake", "--build", str(build_dir), "--config", "Release", "-j", n_jobs, "--target", "llama-cli"],
             env=env,
             check=True
         )
-        print("[OK] Compilazione di llama.cpp (CUDA) completata con successo!")
+        print("[OK] Compilazione di llama.cpp (CUDA + ARM NEON/FP16/DotProd) completata con successo!")
     except Exception as e:
         log_error("cmake_build_cuda", e)
         print(f"\n[FALLBACK] Compilazione con CUDA fallita ({e}).")
-        print("[FALLBACK] Pulizia cache CMake e avvio compilazione di fallback in modalità CPU (-DGGML_CUDA=OFF)...")
+        print("[FALLBACK] Pulizia cache CMake e avvio compilazione di fallback in modalità CPU con acceleratori ARM (-DGGML_CUDA=OFF)...")
         try:
             shutil.rmtree(build_dir, ignore_errors=True)
             build_dir.mkdir(exist_ok=True)
+            cmake_cpu_args = list(cmake_common_args) + ["-DGGML_CUDA=OFF"]
             subprocess.run(
-                ["cmake", "-B", str(build_dir), "-S", str(LLAMA_CPP_DIR), "-DGGML_CUDA=OFF"],
+                ["cmake"] + cmake_cpu_args,
                 env=env,
                 check=True
             )
@@ -354,9 +373,39 @@ def check_and_setup_llama_cpp():
             sys.exit(1)
 
 
+def check_and_configure_swap():
+    """
+    Verifica la memoria Swap del sistema.
+    Su NVIDIA Jetson Orin con 8GB di RAM unificata, i modelli LLM da 8B
+    necessitano di almeno 8-16 GB di swap su NVMe per evitare OOM crash.
+    """
+    print("\n=== Verifica Configurazione Memoria Swap ===")
+    if os.name != "nt":
+        try:
+            total_swap_mb = 0
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("SwapTotal:"):
+                        total_swap_mb = int(line.split()[1]) // 1024
+                        break
+            print(f"[INFO] Swap totale rilevata: {total_swap_mb} MB")
+            if total_swap_mb < 8192:
+                print(" [ATTENZIONE] Memoria Swap inferiore a 8 GB!")
+                print("              Per eseguire stabilmente modelli 8B (senza OOM Killer su Jetson 8GB),")
+                print("              è fortemente raccomandato attivare uno swapfile da 16GB con:")
+                print("              sudo bash setup/setup_swap.sh")
+            else:
+                print(f"[OK] Swap sufficiente ({total_swap_mb} MB >= 8192 MB).")
+        except Exception as e:
+            print(f"[WARNING] Impossibile verificare /proc/meminfo: {e}")
+    else:
+        print("[INFO] Ambiente Windows: gestione automatica del file di paging.")
+
+
 if __name__ == "__main__":
     print("=== Avvio Setup Ambiente di Benchmark (Jetson AGX Orin / Linux) ===")
     try:
+        check_and_configure_swap()
         install_required_packages()
         setup_directories()
         check_and_download_models()

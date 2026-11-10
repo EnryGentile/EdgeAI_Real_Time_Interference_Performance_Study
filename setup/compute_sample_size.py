@@ -211,6 +211,7 @@ def load_csv_columns(
 
     raw_rows: List[Dict[str, Any]] = []
     repetitions_seen = set()
+    failed_rows_count = 0
 
     try:
         with open(csv_path, "r", encoding="utf-8") as f:
@@ -218,6 +219,12 @@ def load_csv_columns(
             for row in reader:
                 if not row:
                     continue
+                # Filtro di validazione: scarta task crashati o con errore di avvio del server
+                resp = str(row.get("model_response") or "")
+                if "Error: the server exited before becoming ready" in resp or "error: the server exited" in resp.lower():
+                    failed_rows_count += 1
+                    continue
+
                 if "repetition" in row and row["repetition"]:
                     try:
                         rep_val = int(row["repetition"])
@@ -232,6 +239,16 @@ def load_csv_columns(
     except Exception as e:
         log_error("load_csv_columns_read", e)
         raise RuntimeError(f"Impossibile leggere il file CSV {csv_path}: {e}") from e
+
+    if failed_rows_count > 0:
+        print(f" [WARNING] Rilevate {failed_rows_count} righe con crash ('Error: the server exited before becoming ready') escluse dal calcolo CLT.")
+
+    if not raw_rows:
+        raise RuntimeError(
+            f"Il file di baseline {csv_path.name} non contiene alcuna riga valida "
+            f"({failed_rows_count} righe scartate per errore 'Error: the server exited before becoming ready').\n"
+            "   -> È necessario rieseguire la baseline con i nuovi parametri ottimizzati prima di procedere al calcolo CLT!"
+        )
 
     num_reps = len(repetitions_seen) if repetitions_seen else 1
     do_aggregation = (repetition_filter is None and num_reps > 1 and aggregate_mode in ("median", "mean"))

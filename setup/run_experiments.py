@@ -545,11 +545,65 @@ EVAL_TIME_RE = re.compile(
 )
 
 
+def clean_llama_response(raw_text: str, prompt: str) -> str:
+    """
+    Rimuove sequenze di caricamento/spinner, banner ASCII di llama.cpp,
+    comandi interattivi, echo del prompt, statistiche di timing e footer 'Exiting...'
+    restituendo esclusivamente la risposta generata dal modello.
+    """
+    if not raw_text:
+        return ""
+
+    text = raw_text
+
+    # 1. Rimuove sequenze dello spinner di caricamento e backspaces \b (\x08)
+    text = re.sub(r"Loading model\.+[\s|/\\\-\x08]*", "", text)
+    text = text.replace("\x08", "").replace("\b", "")
+
+    # 2. Se è presente il menu dei comandi interattivi (/exit, /regen, /clear, ecc.)
+    if "available commands:" in text:
+        idx = text.find("available commands:")
+        sub = text[idx:]
+        lines = sub.splitlines()
+        content_lines = []
+        in_banner = True
+        for line in lines:
+            s_line = line.strip()
+            if in_banner:
+                if s_line.startswith("/glob") or s_line.startswith("/read"):
+                    in_banner = False
+                continue
+            content_lines.append(line)
+        text = "\n".join(content_lines)
+
+    # 3. Rimuove l'echo del prompt se stampato prima della risposta
+    clean_p = prompt.strip()
+    if clean_p and clean_p in text:
+        text = text.split(clean_p, 1)[-1]
+    elif text.startswith("> "):
+        lines = text.splitlines()
+        filtered = [l for l in lines if not l.startswith("> ")]
+        text = "\n".join(filtered)
+
+    # 4. Rimuove statistiche a fine generazione [ Prompt: ... | Generation: ... ]
+    text = re.sub(r"\[\s*Prompt:.*?Generation:.*?\]", "", text, flags=re.IGNORECASE)
+
+    # 5. Rimuove footer '> Exiting...' o 'Exiting...'
+    text = re.sub(r">\s*Exiting\.+", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"Exiting\.+", "", text, flags=re.IGNORECASE)
+
+    # 6. Rimuove righe isolate contenenti solo '>'
+    cleaned_lines = [l for l in text.splitlines() if l.strip() != ">"]
+    return "\n".join(cleaned_lines).strip()
+
+
 def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
     """
     Rileva una sola volta i flag supportati dalla versione di llama-cli installata:
-      - '-no-cnv' disabilita la modalità chat interattiva automatica nei modelli Instruct recenti.
-      - '--perf' assicura la stampa delle statistiche di timing su stderr nelle build recenti.
+      - '--single-turn' o '-st': disabilita la chat interattiva a turni multipli.
+      - '-no-cnv' o '--no-conversation': disabilita la modalità conversazione automatica.
+      - '--perf': assicura la stampa delle statistiche di timing su stderr.
+      - '-fa' o '--flash-attn': riduce il consumo di memoria VRAM e velocizza l'attenzione.
     """
     global _LLAMA_CLI_EXTRA_FLAGS
     if _LLAMA_CLI_EXTRA_FLAGS is not None:
@@ -566,10 +620,28 @@ def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
             check=False
         )
         help_text = res.stdout or ""
-        if "-no-cnv" in help_text or "--no-cnv" in help_text:
+
+        # Disabilitazione modalità chat interattiva
+        if "--single-turn" in help_text:
+            extra.append("--single-turn")
+        elif "-st" in help_text:
+            extra.append("-st")
+
+        if "-no-cnv" in help_text:
             extra.append("-no-cnv")
+        elif "--no-conversation" in help_text:
+            extra.append("--no-conversation")
+
+        # Stampa metriche prestazionali
         if "--perf" in help_text:
             extra.append("--perf")
+
+        # Flash Attention
+        if "--flash-attn" in help_text:
+            extra.append("--flash-attn")
+        elif "-fa" in help_text:
+            extra.append("-fa")
+
     except Exception:
         pass
 
@@ -590,10 +662,12 @@ def _run_llama_cli_once(
     llama_bin = config["llama_cli_path"]
     ngl = override_ngl if override_ngl is not None else config["n_gpu_layers"]
     n_threads = override_threads if override_threads is not None else config["n_threads"]
+    ctx_size = int(config.get("ctx_size", 2048))
 
     cmd = [
         llama_bin,
         "-m", config["model_path"],
+        "-c", str(ctx_size),
         "-ngl", str(ngl),
         "-t", str(n_threads),
         "--temp", str(config["temperature"]),
@@ -649,13 +723,22 @@ def _run_llama_cli_once(
         def _read_stdout():
             nonlocal stress_proc
             try:
+                model_ready = False
                 while True:
                     b = llama_proc.stdout.read(16)
                     if not b:
                         break
+                    stdout_chunks.append(b)
+
+                    # Ignora caratteri di backspace o spinner durante il caricamento del modello
+                    if not model_ready:
+                        chunk_str = b.decode("utf-8", errors="ignore")
+                        if b"\x08" in b or "Loading model" in chunk_str or chunk_str in ("|", "/", "-", "\\"):
+                            continue
+                        model_ready = True
+
                     now_t = time.perf_counter()
                     token_timestamps.append(now_t)
-                    stdout_chunks.append(b)
 
                     if not first_token_seen.is_set():
                         first_token_seen.set()
@@ -689,9 +772,17 @@ def _run_llama_cli_once(
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
         stdout_text = b"".join(stdout_chunks).decode("utf-8", errors="replace")
 
-        if llama_proc.returncode != 0 and not token_timestamps:
+        # Controllo CRASH: verifica codice di ritorno e messaggi fatali del server
+        server_exited_error = (
+            "Error: the server exited before becoming ready" in stdout_text
+            or "Error: the server exited before becoming ready" in stderr_text
+            or "error: the server exited" in stdout_text.lower()
+            or "error: the server exited" in stderr_text.lower()
+        )
+        if llama_proc.returncode != 0 or server_exited_error:
+            err_msg = stderr_text[-500:].strip() or stdout_text[-500:].strip()
             raise RuntimeError(
-                f"llama-cli terminato con codice {llama_proc.returncode}. Stderr: {stderr_text[-400:].strip()}"
+                f"llama-cli terminato con errore (codice {llama_proc.returncode}). Dettagli: {err_msg}"
             )
 
     except subprocess.TimeoutExpired as te:
@@ -757,6 +848,7 @@ def _run_llama_cli_once(
         elif len(inter_token_deltas_ms) == 1:
             jitter_ms = abs(inter_token_deltas_ms[0] - per_token_lat_ms)
 
+    clean_resp = clean_llama_response(stdout_text, prompt)
     return {
         "t_start_mono": t_start_mono,
         "t_end_mono": t_end_mono,
@@ -769,7 +861,7 @@ def _run_llama_cli_once(
         "per_token_lat_ms": round(per_token_lat_ms, 4),
         "throughput_tok_s": round(throughput_tok_s, 4),
         "jitter_ms": round(jitter_ms, 4),
-        "response_text": stdout_text.strip(),
+        "response_text": clean_resp,
     }
 
 
@@ -1067,19 +1159,26 @@ def build_experiment_queue(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Costruisce la lista di esperimenti da eseguire (ciascuno ripetuto per config['repetitions'] volte).
     Ciascuna famiglia di stressor viene eseguita con tutti i suoi metodi simultaneamente:
-      - Famiglie 2D (cpu, os, interrupt): 4 (N) * 1 (D) * 3 reps = 12 run per famiglia
-      - Famiglie 3D (mem, cache, io): 4 (N) * 3 (S) * 1 (D) * 3 reps = 36 run per famiglia
-      - Modalità all-stressor: 12 + 36 + 36 + 36 + 12 + 12 = 144 run totali
+      - Famiglie 2D (cpu, cache, os, interrupt): 4 (N) * 1 (D) * 3 reps = 12 run per famiglia
+      - Famiglie 3D (mem, io): 4 (N) * 3 (S) * 1 (D) * 3 reps = 36 run per famiglia
+      - Modalità all-stressor: 12 + 36 + 12 + 36 + 12 + 12 = 120 run totali
     """
     reps = int(config.get("repetitions", 3))
     queue: List[Dict[str, Any]] = []
 
+    model_clean = str(config.get("model_id", "slm-1b")).strip().lower()
+    device_clean = str(config.get("device", "gpu")).strip().lower()
+    bench_clean = str(config.get("benchmark_name", "mmlu")).strip().lower()
+
     if not config.get("use_stressor", False) or config.get("stressor_class") in ("none", "baseline"):
         for rep in range(1, reps + 1):
-            exp_id = f"baseline_{config['model_id'].lower()}_{config['device']}_{config['benchmark_name'].lower()}_rep{rep}"
+            exp_id = f"baseline_{model_clean}_{device_clean}_{bench_clean}_rep{rep}"
             queue.append({
                 "exp_id": exp_id,
                 "mode": "baseline",
+                "model_id": config.get("model_id", "slm-1b"),
+                "device": config.get("device", "gpu"),
+                "benchmark": config.get("benchmark_name", "mmlu"),
                 "stressor_class": "none",
                 "stressor_method": "none",
                 "n_tag": "N0",
@@ -1131,13 +1230,16 @@ def build_experiment_queue(config: Dict[str, Any]) -> List[Dict[str, Any]]:
                 for dur in D_LEVELS:
                     for rep in range(1, reps + 1):
                         if has_size:
-                            exp_id = f"run_{s_class}_{n_tag}_{dur}_{s_tag}_rep{rep}"
+                            exp_id = f"run_{model_clean}_{device_clean}_{bench_clean}_{s_class}_{n_tag}_{dur}_{s_tag}_rep{rep}"
                         else:
-                            exp_id = f"run_{s_class}_{n_tag}_{dur}_rep{rep}"
+                            exp_id = f"run_{model_clean}_{device_clean}_{bench_clean}_{s_class}_{n_tag}_{dur}_rep{rep}"
 
                         queue.append({
                             "exp_id": exp_id,
                             "mode": "stressor",
+                            "model_id": config.get("model_id", "slm-1b"),
+                            "device": config.get("device", "gpu"),
+                            "benchmark": config.get("benchmark_name", "mmlu"),
                             "stressor_class": s_class,
                             "stressor_method": s_method_label,
                             "n_tag": n_tag,
@@ -1443,6 +1545,15 @@ def execute_experiment(
                 f"Jitter={metrics['jitter_ms']:.2f}ms"
             )
 
+            # Cooldown tra task consecutivi per rilasciare socket in TIME_WAIT e deallocare RAM
+            time.sleep(1.0)
+            cleanup_orphan_stressors()
+            if hasattr(os, "sync"):
+                try:
+                    os.sync()
+                except Exception:
+                    pass
+
         monitor.stop()
         cleanup_orphan_stressors()
 
@@ -1465,8 +1576,9 @@ def execute_experiment(
             tasks_rep_csv_path = RESULTS_DIR / f"baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{rep_num}_tasks.csv"
             responses_json_path = RESULTS_DIR / f"responses_baseline_{config['model_id'].lower()}_{config['device']}_{bench_lower}_rep{rep_num}.json"
         else:
-            # Per gli stressor, l'exp_id contiene già _rep{rep} (es. tasks_run_cpu_N25_t_tot_rep1.csv)
-            tasks_csv_path = RESULTS_DIR / f"tasks_{exp['exp_id']}.csv"
+            # Per gli stressor, l'exp_id contiene già modello, device, benchmark, classe, N, D, [S], rep
+            # es. run_slm-1b_gpu_mmlu_cpu_N25_t_tot_rep1_tasks.csv
+            tasks_csv_path = RESULTS_DIR / f"{exp['exp_id']}_tasks.csv"
             responses_json_path = RESULTS_DIR / f"responses_{exp['exp_id']}.json"
 
         # 2a. Salvataggio su file dedicato della singola ripetizione (se baseline)
@@ -1502,6 +1614,16 @@ def execute_experiment(
                 os.fsync(f.fileno())
             print(f" [OK] Risposte del modello ({len(responses_log)} risposte) salvate in: {responses_json_path}")
 
+        # Per retrocompatibilità con script che cercano il prefisso tasks_ (es. tasks_run_*.csv)
+        alt_tasks_path: Optional[Path] = None
+        if exp["mode"] != "baseline" and task_records and tasks_csv_path.exists():
+            try:
+                alt_tasks_path = RESULTS_DIR / f"tasks_{exp['exp_id']}.csv"
+                if alt_tasks_path != tasks_csv_path:
+                    shutil.copy2(tasks_csv_path, alt_tasks_path)
+            except Exception:
+                alt_tasks_path = None
+
         # 3. Aggregazione sulla Run per il DoE
         generated_files: List[Tuple[Path, str]] = [
             (ts_path, "data_timeseries"),
@@ -1510,6 +1632,8 @@ def execute_experiment(
         ]
         if tasks_rep_csv_path is not None:
             generated_files.append((tasks_rep_csv_path, "results"))
+        if alt_tasks_path is not None and alt_tasks_path.exists():
+            generated_files.append((alt_tasks_path, "results"))
 
         if task_records:
             mean_ttft = round(statistics.mean(r["ttft_ms"] for r in task_records), 4)
@@ -1665,6 +1789,12 @@ def parse_args():
         help="Invia immediatamente via SSH tutti i CSV già presenti sulla board verso la tua macchina ed esce"
     )
     parser.add_argument(
+        "-c", "--ctx-size",
+        type=int,
+        default=None,
+        help="Dimensione della finestra di contesto per llama.cpp (default: da run_config.json o 2048)"
+    )
+    parser.add_argument(
         "--no-ssh",
         action="store_true",
         default=False,
@@ -1703,6 +1833,7 @@ def main():
             or args.ssh_dest is not None
             or args.ssh_port is not None
             or args.ssh_key is not None
+            or args.ctx_size is not None
             or args.no_ssh
         )
 
@@ -1732,6 +1863,7 @@ def main():
             ssh_dest_in = args.ssh_dest if args.ssh_dest is not None else current_cfg.get("ssh_dest", "./EdgeAI_Results")
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
             ssh_key_in = args.ssh_key if args.ssh_key is not None else current_cfg.get("ssh_key")
+            ctx_size_in = args.ctx_size if args.ctx_size is not None else current_cfg.get("ctx_size", 2048)
 
             instantiate_run(
                 model_input=model_in,
@@ -1747,7 +1879,8 @@ def main():
                 ssh_dest=ssh_dest_in,
                 ssh_port=ssh_port_in,
                 ssh_key=ssh_key_in,
-                no_ssh=no_ssh_in
+                no_ssh=no_ssh_in,
+                ctx_size=ctx_size_in
             )
             with open(CONFIG_OUTPUT_PATH, "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -1755,6 +1888,8 @@ def main():
             config = current_cfg
             if args.reboot is not None:
                 config["reboot_after_run"] = args.reboot
+            if args.ctx_size is not None:
+                config["ctx_size"] = args.ctx_size
             if args.no_ssh:
                 config["no_ssh"] = True
                 config["ssh_target"] = None

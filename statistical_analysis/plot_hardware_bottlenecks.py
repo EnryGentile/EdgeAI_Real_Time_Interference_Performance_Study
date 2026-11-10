@@ -51,19 +51,37 @@ def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
         return pd.DataFrame()
 
     records = []
-    re_stress = re.compile(r"run_([a-zA-Z0-9_\-]+?)_(N\d+)_(t_[a-z]+)(?:_(S\d+))?_rep(\d+)_timeseries\.csv")
-    re_base = re.compile(r"baseline_([a-zA-Z0-9\-]+)_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_rep(\d+)_timeseries\.csv")
+    # Pattern completo: include modello, device e benchmark
+    # es. run_slm-1b_gpu_mmlu_cpu_N25_t_tot_rep1_timeseries.csv o run_slm-1b_gpu_mmlu_mem_N25_t_tot_S25_rep1_timeseries.csv
+    re_stress_full = re.compile(
+        r"run_([a-zA-Z0-9\-]+)_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_([a-zA-Z0-9_\-]+?)_(N\d+)_(t_[a-z]+)(?:_(S\d+))?_rep(\d+)_timeseries\.csv",
+        re.IGNORECASE
+    )
+    # Pattern legacy: senza modello, device e benchmark
+    re_stress_legacy = re.compile(
+        r"run_([a-zA-Z0-9_\-]+?)_(N\d+)_(t_[a-z]+)(?:_(S\d+))?_rep(\d+)_timeseries\.csv",
+        re.IGNORECASE
+    )
+    re_base = re.compile(
+        r"baseline_([a-zA-Z0-9\-]+)_([a-zA-Z0-9]+)_([a-zA-Z0-9]+)_rep(\d+)_timeseries\.csv",
+        re.IGNORECASE
+    )
 
     for filepath in ts_files:
         fname = os.path.basename(filepath)
-        m_str = re_stress.match(fname)
+        m_str_full = re_stress_full.match(fname)
+        m_str_leg = re_stress_legacy.match(fname) if not m_str_full else None
         m_bas = re_base.match(fname)
 
-        if m_str:
-            stressor, n_w, dur, sz, rep = m_str.groups()
+        if m_str_full:
+            model_val, dev_val, bench_val, stressor, n_w, dur, sz, rep = m_str_full.groups()
             sz = sz if sz else "N/A"
+        elif m_str_leg:
+            stressor, n_w, dur, sz, rep = m_str_leg.groups()
+            sz = sz if sz else "N/A"
+            model_val, dev_val, bench_val = "N/A", "N/A", "N/A"
         elif m_bas:
-            _, _, _, rep = m_bas.groups()
+            model_val, dev_val, bench_val, rep = m_bas.groups()
             stressor, n_w, dur, sz = "baseline", "N0", "baseline", "N/A"
         else:
             continue
@@ -77,6 +95,9 @@ def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
             sub_df.rename(columns={k: v for k, v in rename_map.items() if k in sub_df.columns and v not in sub_df.columns}, inplace=True)
 
             mean_vals = sub_df.mean(numeric_only=True).to_dict()
+            mean_vals["model"] = model_val
+            mean_vals["device"] = dev_val
+            mean_vals["benchmark"] = bench_val
             mean_vals["stressor"] = stressor
             mean_vals["n_workers"] = n_w
             mean_vals["duration"] = dur

@@ -36,7 +36,7 @@ Ogni volta che si seleziona una famiglia di stressor, il framework avvia **tutti
 - **Watchdog di Protezione (Timeout 300s)**: ogni singolo task su `llama-cli` è protetto da un timeout di 5 minuti. Se l'interferenza genera un hang o un blocco, il processo viene terminato in sicurezza e il framework passa al task successivo, evitando l'interruzione della campagna.
 - **Cattura e Salvataggio delle Risposte del Modello**: oltre alle metriche temporali, il testo generato dal modello viene salvato in due formati:
   1. *File JSON Strutturato Dedicato* (`results/responses_<exp_id>.json`): registra prompt, output completo, ground truth di benchmark (lettera esatta MMLU o query SQL Spider) e timing per valutare accuratezza e allucinazioni.
-  2. *CSV per-task* (`results/tasks_<exp_id>.csv`): colonne `model_response` e `ground_truth` affiancate alle metriche per-token.
+  2. *CSV per-task* (`results/<exp_id>_tasks.csv` e `results/tasks_<exp_id>.csv`): colonne `model_response` e `ground_truth` affiancate alle metriche per-token.
 - **Monitoraggio Termico Hardware a 1 Hz**: lettura continua dei sensori hardware Tegra (`/sys/class/thermal/thermal_zone*`: `CPU-therm`, `GPU-therm`, `SOC*-therm`, `Tdiode`) e rilevamento del thermal throttling via `cpufreq`. Fallback automatico su `hwmon` e `nvidia-smi` per ambienti desktop o Colab.
 - **Reverse SSH Tunneling Automatico**: invio istantaneo e sicuro via SCP di tutti i file generati direttamente sul PC dell'utente, funzionante anche attraverso reti universitarie e NAT complessi (DESSERT Remote Access / Cloudflare Tunnel).
 - **Gestione Atomica dello Stato e Reboot**: checkpoint persistente (`setup/experiment_state.json`) che tiene traccia dei run completati. Al termine di ogni run la board si riavvia, attende 90 secondi di stabilizzazione termica ed esegue il test successivo.
@@ -118,6 +118,9 @@ cd ~
 # Clona la repository (se non già fatto)
 git clone https://github.com/TUO_REPO/EdgeAI_Real_Time_Interference_Performance_Study.git
 cd EdgeAI_Real_Time_Interference_Performance_Study
+
+# Configura lo Swap da 16GB su disco NVMe (fondamentale per evitare OOM crash con LLaMA-8B su Jetson Orin 8GB)
+sudo bash setup/setup_swap.sh
 
 # Avvia il setup di sistema
 python3 setup/setup_system.py
