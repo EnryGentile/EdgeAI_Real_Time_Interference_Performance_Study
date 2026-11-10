@@ -18,6 +18,11 @@ fallback GPU -> CPU se l'acceleratore non è disponibile, scrittura atomica con 
 import os
 import re
 import sys
+
+# Su NVIDIA Jetson (architettura UMA), forza l'allocatore CUDA di GGML a usare cudaMallocManaged
+# evitando che cudaMalloc fallisca per esaurimento del carveout Tegra nvmap (errore 12 ENOMEM)
+os.environ["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+
 import json
 import shutil
 import argparse
@@ -728,7 +733,8 @@ def instantiate_run(
             "--temp", str(temperature),
             "-s", str(seed),
             "-n", str(resolved_max_tokens),
-            "--no-display-prompt"
+            "--no-display-prompt",
+            "--no-mmap"
         ]
 
         config = RunConfig(

@@ -17,6 +17,11 @@ Ottimizzato e protetto con gestione completa degli errori in runtime (try/except
 import os
 import re
 import sys
+
+# Su NVIDIA Jetson (architettura UMA), forza l'allocatore CUDA di GGML a usare cudaMallocManaged
+# evitando che cudaMalloc fallisca per esaurimento del carveout Tegra nvmap (errore 12 ENOMEM)
+os.environ["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+
 import csv
 import time
 import math
@@ -635,6 +640,10 @@ def _detect_llama_cli_extra_flags(llama_cli_path: str) -> List[str]:
         if "--perf" in help_text:
             extra.append("--perf")
 
+        # Disabilitazione mmap per architetture UMA (Jetson) per prevenire OOM su page cache
+        if "--no-mmap" in help_text:
+            extra.append("--no-mmap")
+
     except Exception:
         pass
 
@@ -669,11 +678,16 @@ def _run_llama_cli_once(
         "-s", str(config.get("seed", 42)),
         "-n", str(config["max_tokens"]),
         "--no-display-prompt",
+        "--no-mmap",
     ] + _detect_llama_cli_extra_flags(llama_bin) + ["-p", prompt]
 
     stress_proc: Optional[subprocess.Popen] = None
     llama_proc: Optional[subprocess.Popen] = None
     preexec = os.setsid if os.name != "nt" else None
+
+    # Assicura che l'ambiente per il processo figlio abbia GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
+    env = os.environ.copy()
+    env["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
 
     t_start_mono = time.monotonic()
     t_start_perf = time.perf_counter()
@@ -702,7 +716,8 @@ def _run_llama_cli_once(
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             bufsize=0,
-            preexec_fn=preexec
+            preexec_fn=preexec,
+            env=env
         )
 
         def _read_stderr():
@@ -892,9 +907,29 @@ def run_single_llama_task(
         log_fallback_error("run_single_llama_task_error", err, exp_id=exp_id)
         cleanup_orphan_stressors()
         if str(config.get("device", "")).lower() == "gpu":
-            raise ExperimentRuntimeError(
-                f"Errore di esecuzione su device GPU durante il task: {err}"
-            ) from err
+            # In caso di errore temporaneo di allocazione GPU (es. rilascio asincrono buffer Tegra nvmap), effettua 1 retry dopo 3s
+            print(f"\n   [WARNING] Errore esecuzione GPU nel task ({err}). Attesa 3s per rilascio memoria e retry...")
+            time.sleep(3.0)
+            if hasattr(os, "sync"):
+                try:
+                    os.sync()
+                except Exception:
+                    pass
+            try:
+                res = _run_llama_cli_once(
+                    config=config,
+                    prompt=prompt,
+                    stress_cmd=stress_cmd,
+                    duration_mode=duration_mode,
+                    task_timeout_sec=task_timeout_sec
+                )
+                print("   [RETRY GPU OK] Task completato con successo su GPU al secondo tentativo.")
+                return res
+            except Exception as second_gpu_err:
+                log_fallback_error("run_single_llama_task_gpu_retry_failed", second_gpu_err, exp_id=exp_id)
+                raise ExperimentRuntimeError(
+                    f"Errore di esecuzione su device GPU durante il task: {second_gpu_err}"
+                ) from second_gpu_err
 
         # Solo se siamo su CPU, effettua 1 tentativo di fallback prima di arrestare lo script
         print(f"\n   [WARNING] Errore runtime nel task su CPU ({err}). Avvio singolo tentativo di fallback...")
@@ -1541,7 +1576,7 @@ def execute_experiment(
             )
 
             # Cooldown tra task consecutivi per rilasciare socket in TIME_WAIT e deallocare RAM
-            time.sleep(1.0)
+            time.sleep(1.5)
             cleanup_orphan_stressors()
             if hasattr(os, "sync"):
                 try:
