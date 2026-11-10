@@ -18,6 +18,7 @@ import os
 import re
 import sys
 import csv
+import gc
 import time
 import math
 import json
