@@ -41,7 +41,7 @@ enable_service() {
     SUDOERS_FILE="/etc/sudoers.d/${CURRENT_USER}-reboot"
     if [ ! -f "${SUDOERS_FILE}" ]; then
         echo " [1/3] Configurazione permessi sudo per reboot senza password..."
-        echo "${CURRENT_USER} ALL=(ALL) NOPASSWD: /sbin/reboot, /bin/systemctl reboot" | sudo tee "${SUDOERS_FILE}" > /dev/null
+        echo "${CURRENT_USER} ALL=(ALL) NOPASSWD: /sbin/reboot, /bin/systemctl reboot, /usr/sbin/nvpmodel, /usr/bin/jetson_clocks" | sudo tee "${SUDOERS_FILE}" > /dev/null
         sudo chmod 0440 "${SUDOERS_FILE}"
         echo "       [OK] File ${SUDOERS_FILE} creato."
     else

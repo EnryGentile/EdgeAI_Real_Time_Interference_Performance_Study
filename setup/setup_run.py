@@ -880,7 +880,8 @@ def parse_arguments():
         help="Numero di ripetizioni per ogni esperimento (default: 3)"
     )
     parser.add_argument(
-        "--transient-wait",
+        "-w", "--wait", "--transient-wait",
+        dest="transient_wait",
         type=int,
         default=90,
         help="Tempo di attesa in secondi dopo il boot per far esaurire il transitorio (default: 90s per Jetson Orin)"

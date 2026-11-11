@@ -533,6 +533,24 @@ def cleanup_orphan_stressors():
         pass
 
 
+def ensure_jetson_performance_mode():
+    """
+    Abilita la modalità di massima prestazione (nvpmodel -m 0) e blocca i clock (jetson_clocks).
+    Garantisce frequenze massime a CPU (1.5 GHz), GPU (625 MHz) e memoria LPDDR5 (2133 MHz),
+    abbattendo i tempi di esecuzione ed eliminando il jitter di frequenza durante il DoE.
+    """
+    if os.name != "nt":
+        try:
+            if shutil.which("nvpmodel"):
+                subprocess.run(["sudo", "-n", "nvpmodel", "-m", "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if shutil.which("jetson_clocks"):
+                res = subprocess.run(["sudo", "-n", "jetson_clocks"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                if res.returncode == 0:
+                    print(" [PERF] Jetson Clocks attivi: frequenze CPU, GPU e bus RAM LPDDR5 bloccate al massimo.")
+        except Exception:
+            pass
+
+
 def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = True):
     """
     Rilascia attivamente e immediatamente la memoria unificata (UMA) su NVIDIA Jetson:
@@ -776,7 +794,7 @@ class LlamaPersistentSession:
 
     def _start_process(self, ctx_s: int, b_s: int, ub_s: int, load_timeout_sec: int):
         reclaim_unified_memory(self.model_path, kill_llama=True)
-        time.sleep(1.0)
+        time.sleep(0.5)
 
         cmd = [
             self.llama_bin,
@@ -2133,14 +2151,14 @@ def execute_experiment(
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
-        print("\n [PULIZIA UMA] Rilascio preventivo Page Cache e coalescenza memoria...")
-        reclaim_unified_memory(config.get("model_path"), kill_llama=True)
-        time.sleep(1.0)
+        ensure_jetson_performance_mode()
 
-        print(" [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
+        print("\n [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
+        t_load_0 = time.perf_counter()
         llama_session = LlamaPersistentSession(config)
         llama_session.start()
-        print(" [OK] Modello GGUF allocato. Tra un task e il successivo verrà resettata solo la KV cache (/clear).")
+        t_load_sec = time.perf_counter() - t_load_0
+        print(f" [OK] Modello GGUF allocato in {t_load_sec:.1f}s. Tra un task e il successivo verrà resettata solo la KV cache (/clear).")
 
         monitor = SystemMonitor()
         monitor.start()
@@ -2621,6 +2639,7 @@ def main():
 
         # Pulizia immediata preventiva all'avvio della sessione
         reclaim_unified_memory(config.get("model_path"), kill_llama=True)
+        ensure_jetson_performance_mode()
 
         while pending:
             next_exp = pending[0]
