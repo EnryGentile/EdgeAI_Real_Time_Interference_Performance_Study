@@ -63,6 +63,8 @@ WorkingDirectory=${PROJECT_DIR}
 Environment="PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin"
 Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64"
 Environment="PYTHONUNBUFFERED=1"
+ExecStartPre=+/usr/sbin/nvpmodel -m 0
+ExecStartPre=+/usr/bin/jetson_clocks
 ExecStart=${PYTHON_BIN} setup/run_experiments.py
 Restart=no
 StandardOutput=append:${LOG_FILE}

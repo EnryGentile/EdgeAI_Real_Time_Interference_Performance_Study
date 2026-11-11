@@ -648,7 +648,7 @@ def instantiate_run(
     stressor_input: Optional[str] = None,
     samples: Optional[int] = None,
     repetitions: int = 3,
-    transient_wait_sec: int = 90,
+    transient_wait_sec: int = 60,
     reboot_after_run: bool = True,
     ssh_target: Optional[str] = None,
     ssh_dest: str = "./EdgeAI_Results",
@@ -692,7 +692,7 @@ def instantiate_run(
         # 5. Determinazione numero di campioni (task) e ripetizioni
         sample_count = samples if (samples is not None and samples > 0) else 40
         reps_clean = max(1, int(repetitions)) if repetitions is not None else 3
-        wait_clean = max(0, int(transient_wait_sec)) if transient_wait_sec is not None else 90
+        wait_clean = max(0, int(transient_wait_sec)) if transient_wait_sec is not None else 60
 
         # 6. Esecuzione dei check di sistema (con eventuale fallback GPU -> CPU)
         (
@@ -883,8 +883,8 @@ def parse_arguments():
         "-w", "--wait", "--transient-wait",
         dest="transient_wait",
         type=int,
-        default=90,
-        help="Tempo di attesa in secondi dopo il boot per far esaurire il transitorio (default: 90s per Jetson Orin)"
+        default=60,
+        help="Tempo di attesa in secondi dopo il boot per far esaurire il transitorio (default: 60s per Jetson Orin)"
     )
     reboot_grp = parser.add_mutually_exclusive_group()
     reboot_grp.add_argument(

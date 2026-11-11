@@ -533,24 +533,6 @@ def cleanup_orphan_stressors():
         pass
 
 
-def ensure_jetson_performance_mode():
-    """
-    Abilita la modalità di massima prestazione (nvpmodel -m 0) e blocca i clock (jetson_clocks).
-    Garantisce frequenze massime a CPU (1.5 GHz), GPU (625 MHz) e memoria LPDDR5 (2133 MHz),
-    abbattendo i tempi di esecuzione ed eliminando il jitter di frequenza durante il DoE.
-    """
-    if os.name != "nt":
-        try:
-            if shutil.which("nvpmodel"):
-                subprocess.run(["sudo", "-n", "nvpmodel", "-m", "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if shutil.which("jetson_clocks"):
-                res = subprocess.run(["sudo", "-n", "jetson_clocks"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                if res.returncode == 0:
-                    print(" [PERF] Jetson Clocks attivi: frequenze CPU, GPU e bus RAM LPDDR5 bloccate al massimo.")
-        except Exception:
-            pass
-
-
 def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = True):
     """
     Rilascia attivamente e immediatamente la memoria unificata (UMA) su NVIDIA Jetson:
@@ -2151,8 +2133,6 @@ def execute_experiment(
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
-        ensure_jetson_performance_mode()
-
         print("\n [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
         t_load_0 = time.perf_counter()
         llama_session = LlamaPersistentSession(config)
@@ -2567,7 +2547,7 @@ def main():
                 stressor_in = current_cfg.get("stressor_class", "cpu")
             samples_in = args.samples if args.samples is not None else current_cfg.get("sample_count", 40)
             reps_in = args.repetitions if args.repetitions is not None else current_cfg.get("repetitions", 3)
-            wait_in = args.transient_wait if args.transient_wait is not None else current_cfg.get("transient_wait_sec", 90)
+            wait_in = args.transient_wait if args.transient_wait is not None else current_cfg.get("transient_wait_sec", 60)
             reboot_in = args.reboot if args.reboot is not None else current_cfg.get("reboot_after_run", True)
             no_ssh_in = bool(args.no_ssh or current_cfg.get("no_ssh", False))
             ssh_target_in = None if no_ssh_in else (args.ssh_target if args.ssh_target is not None else current_cfg.get("ssh_target"))
@@ -2639,13 +2619,12 @@ def main():
 
         # Pulizia immediata preventiva all'avvio della sessione
         reclaim_unified_memory(config.get("model_path"), kill_llama=True)
-        ensure_jetson_performance_mode()
 
         while pending:
             next_exp = pending[0]
 
-            # 1. Attesa transitorio post-boot (default 90s su Jetson Orin)
-            wait_for_post_boot_transient(int(config.get("transient_wait_sec", 90)), config.get("model_path"))
+            # 1. Attesa transitorio post-boot (default 60s su Jetson Orin)
+            wait_for_post_boot_transient(int(config.get("transient_wait_sec", 60)), config.get("model_path"))
 
             # 2. Esecuzione esperimento (protetto da try/except e emergency fallback)
             generated_files = execute_experiment(
