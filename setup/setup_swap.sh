@@ -18,7 +18,16 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 SWAP_FILE="/swapfile"
-SWAP_SIZE_GB=16
+# Calcola lo spazio disco disponibile sulla partizione root
+AVAIL_DISK_MB=$(df -m / | tail -1 | awk '{print $4}')
+if [ "$AVAIL_DISK_MB" -lt 19000 ]; then
+    # Se lo spazio libero è inferiore a 19 GB (es. MicroSD da 64GB con 11GB liberi),
+    # usa 8GB di swap per non saturare il disco e lasciare sempre almeno 3-4 GB liberi.
+    SWAP_SIZE_GB=8
+    echo "[INFO] Spazio disco libero limitato (${AVAIL_DISK_MB} MB). Dimensione swap impostata a 8 GB per sicurezza."
+else
+    SWAP_SIZE_GB=16
+fi
 
 echo "===================================================================="
 echo " Verifica e configurazione Swap da ${SWAP_SIZE_GB}GB per Edge AI su Jetson Orin"
