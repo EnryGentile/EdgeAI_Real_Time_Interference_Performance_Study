@@ -249,18 +249,18 @@ def format_mmlu_prompt(sample: Dict[str, Any]) -> str:
     try:
         if not isinstance(sample, dict):
             raise TypeError(f"Atteso dict per campione MMLU, ricevuto {type(sample)}")
-        q = str(sample.get("question") or "Domanda di test MMLU").strip()
+        q = str(sample.get("question") or "MMLU test question").strip()
         choices = sample.get("choices", [])
         if not isinstance(choices, list) or len(choices) == 0:
-            choices = ["Opzione A", "Opzione B", "Opzione C", "Opzione D"]
+            choices = ["Option A", "Option B", "Option C", "Option D"]
         choices_str = ""
         labels = ["A", "B", "C", "D"]
         for i, choice in enumerate(choices[:4]):
             choices_str += f"{labels[i]}. {choice}\n"
-        return f"Domanda: {q}\nOpzioni:\n{choices_str}Rispondi solo con la lettera della risposta corretta:"
+        return f"Question: {q}\nOptions:\n{choices_str}Answer with only the letter corresponding to the correct answer:"
     except Exception as e:
         log_runtime_error("format_mmlu_prompt", e)
-        return "Domanda: Qual è la complessità della ricerca binaria?\nOpzioni:\nA. O(log n)\nB. O(n)\nC. O(n^2)\nD. O(1)\nRispondi solo con la lettera della risposta corretta:"
+        return "Question: What is the time complexity of binary search?\nOptions:\nA. O(log n)\nB. O(n)\nC. O(n^2)\nD. O(1)\nAnswer with only the letter corresponding to the correct answer:"
 
 
 def format_spider_prompt(sample: Dict[str, Any]) -> str:
@@ -268,12 +268,12 @@ def format_spider_prompt(sample: Dict[str, Any]) -> str:
     try:
         if not isinstance(sample, dict):
             raise TypeError(f"Atteso dict per campione Spider, ricevuto {type(sample)}")
-        q = str(sample.get("question") or "Mostra tutti i record della tabella principale").strip()
+        q = str(sample.get("question") or "Show all records from the main table").strip()
         db_id = str(sample.get("db_id") or "database").strip()
-        return f"Converti la seguente richiesta in una query SQL per il database '{db_id}'.\nRichiesta: {q}\nSQL:"
+        return f"Convert the following natural language request into a SQL query for the database '{db_id}'.\nRequest: {q}\nSQL:"
     except Exception as e:
         log_runtime_error("format_spider_prompt", e)
-        return "Converti la seguente richiesta in una query SQL per il database 'telemetry'.\nRichiesta: Seleziona tutti i sensori attivi ordinati per id.\nSQL:"
+        return "Convert the following natural language request into a SQL query for the database 'telemetry'.\nRequest: Select all active sensors ordered by id.\nSQL:"
 
 
 # ==============================================================================
