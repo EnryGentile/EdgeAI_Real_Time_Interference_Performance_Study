@@ -270,6 +270,16 @@ def format_spider_prompt(sample: Dict[str, Any]) -> str:
             raise TypeError(f"Atteso dict per campione Spider, ricevuto {type(sample)}")
         q = str(sample.get("question") or "Show all records from the main table").strip()
         db_id = str(sample.get("db_id") or "database").strip()
+        schema = str(sample.get("schema") or "").strip()
+        if schema:
+            # Formato standard text-to-SQL: schema del database + richiesta + vincolo sul formato
+            # dell'output, così la risposta è eseguibile e confrontabile con la query attesa.
+            return (
+                f"SQLite database '{db_id}' with the following schema:\n\n{schema}\n\n"
+                f"Write a SQL query (SQLite) for this database that answers the request.\n"
+                f"Request: {q}\n"
+                f"Answer with only the SQL query, without explanations."
+            )
         return f"Convert the following natural language request into a SQL query for the database '{db_id}'.\nRequest: {q}\nSQL:"
     except Exception as e:
         log_runtime_error("format_spider_prompt", e)
@@ -425,6 +435,21 @@ def check_system_prerequisites(
                     f"Richiesti {requested_samples} campioni ma il dataset ne contiene {len(dataset_samples)}. "
                     f"I campioni verranno ciclati con modulo {len(dataset_samples)}."
                 )
+            if benchmark_key == "spider" and not all(s.get("schema") for s in dataset_samples if isinstance(s, dict)):
+                # Dataset creato senza schema: lo aggiunge dai database SQLite locali (datasets/spider_db)
+                print(" [INFO] Campioni Spider senza schema del database: lettura schema dai database locali...")
+                try:
+                    from setup_system import add_spider_schemas
+                    add_spider_schemas(dataset_path)
+                    with open(dataset_path, "r", encoding="utf-8") as f:
+                        dataset_samples = json.load(f)
+                except Exception as e:
+                    log_runtime_error("add_spider_schemas", e)
+                if not all(s.get("schema") for s in dataset_samples if isinstance(s, dict)):
+                    warnings.append(
+                        "Schema Spider assente per alcuni campioni (database mancanti in datasets/spider_db): "
+                        "quei prompt non conterranno lo schema."
+                    )
             first_sample = dataset_samples[0]
             _ = format_mmlu_prompt(first_sample) if benchmark_key == "mmlu" else format_spider_prompt(first_sample)
             print(f" [OK] Formattazione prompt validata sul campione 1.")

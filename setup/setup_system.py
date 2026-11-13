@@ -278,6 +278,78 @@ def check_and_download_datasets():
                 print(f"[ERRORE CRITICO] Impossibile salvare il dataset Spider: {e2}")
                 sys.exit(1)
 
+    # 3. Schema dei database Spider nei campioni (serve al prompt text-to-SQL)
+    try:
+        add_spider_schemas(spider_path)
+    except Exception as e:
+        log_error("add_spider_schemas", e)
+        print(f"[WARNING] Schema Spider non aggiunto ({e}): i prompt Spider non conterranno lo schema.")
+
+
+# ==============================================================================
+# 2b. SCHEMA DEI DATABASE SPIDER PER I PROMPT
+# ==============================================================================
+# Il dataset HuggingFace 'xlangai/spider' contiene solo domande e query: i database
+# SQLite vanno messi a mano in datasets/spider_db/<db_id>/<db_id>.sqlite
+# (dallo zip ufficiale di Spider, cartella database/). Questo script non li scarica.
+SPIDER_DB_DIR = DATASETS_DIR / "spider_db"
+
+
+def spider_db_path(db_id: str, db_dir: Path = SPIDER_DB_DIR) -> Path:
+    return db_dir / db_id / f"{db_id}.sqlite"
+
+
+def read_sqlite_schema(db_file: Path) -> str:
+    """Restituisce le istruzioni CREATE TABLE del database, come le vedrebbe uno sviluppatore."""
+    import sqlite3
+    conn = sqlite3.connect(f"file:{db_file.as_posix()}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY rowid"
+        ).fetchall()
+    finally:
+        conn.close()
+    statements = []
+    for (sql,) in rows:
+        # spazi e tabulazioni compattati: meno token nel prompt, stesso contenuto
+        sql = "\n".join(" ".join(line.split()) for line in sql.strip().splitlines() if line.strip())
+        statements.append(sql.rstrip(";") + ";")
+    return "\n\n".join(statements)
+
+
+def add_spider_schemas(spider_json: Path, db_dir: Path = SPIDER_DB_DIR) -> int:
+    """
+    Aggiunge a ogni campione del dataset Spider locale il campo 'schema' (CREATE TABLE del suo
+    database), letto dai file SQLite già presenti in db_dir. I campioni il cui database manca
+    restano senza schema. Restituisce il numero di campioni con schema.
+    """
+    samples = json.loads(spider_json.read_text(encoding="utf-8"))
+    schema_cache: Dict[str, str] = {}
+    missing = set()
+    changed = False
+    for s in samples:
+        db_id = s.get("db_id") if isinstance(s, dict) else None
+        if not db_id:
+            continue
+        if db_id not in schema_cache:
+            db_file = spider_db_path(db_id, db_dir)
+            schema_cache[db_id] = read_sqlite_schema(db_file) if db_file.exists() else ""
+            if not schema_cache[db_id]:
+                missing.add(db_id)
+        schema = schema_cache[db_id]
+        if schema and s.get("schema") != schema:
+            s["schema"] = schema
+            changed = True
+    if changed:
+        _save_json_atomic(spider_json, samples)
+    with_schema = sum(1 for s in samples if isinstance(s, dict) and s.get("schema"))
+    print(f"[OK] Schema Spider presente in {with_schema}/{len(samples)} campioni di {spider_json.name}.")
+    if missing:
+        print(f"[WARNING] Database Spider mancanti in {db_dir}: {', '.join(sorted(missing))}. "
+              f"Copia <db_id>/<db_id>.sqlite in quella cartella per avere lo schema nei prompt.")
+    return with_schema
+
 
 # ==============================================================================
 # 3. COMPILAZIONE llama.cpp CON FALLBACK CUDA -> CPU
