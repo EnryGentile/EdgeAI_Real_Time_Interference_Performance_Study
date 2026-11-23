@@ -72,8 +72,8 @@ def cliffs_delta(x: np.ndarray, y: np.ndarray) -> Tuple[float, str]:
     return delta, mag
 
 
-def load_doe_files(data_root: Path, model: str, benchmark: str) -> pd.DataFrame:
-    """Carica tutti i file doe_*.csv per il modello/benchmark separando baseline e stressor."""
+def load_doe_files(data_root: Path, model: str, benchmark: str, max_reps: int | None = 20) -> pd.DataFrame:
+    """Carica tutti i file doe_*.csv per il modello/benchmark separando baseline e stressor (limitati a max_reps)."""
     frames: List[pd.DataFrame] = []
     pattern = f"doe_{model.lower()}_*_{benchmark.lower()}_*.csv"
     for csv_path in sorted(data_root.rglob(pattern)):
@@ -85,27 +85,39 @@ def load_doe_files(data_root: Path, model: str, benchmark: str) -> pd.DataFrame:
         df["device"] = device
         df["source_file"] = csv_path.name
         df["size"] = df["size"].fillna("N/A").replace({"": "N/A", "nan": "N/A"})
+        if max_reps is not None and max_reps > 0:
+            grp_cols = [c for c in ["stressor_class", "num_workers", "size"] if c in df.columns]
+            df = df.groupby(grp_cols, dropna=False, sort=False).head(max_reps).reset_index(drop=True)
         frames.append(df)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
 
-def load_task_files(data_root: Path, model: str, benchmark: str) -> pd.DataFrame:
-    """Carica i CSV per-task evitando doppioni (solo baseline_*_rep*_tasks e run_*_tasks)."""
+def load_task_files(data_root: Path, model: str, benchmark: str, max_reps: int | None = 20) -> pd.DataFrame:
+    """Carica i CSV per-task evitando doppioni (solo baseline_*_rep*_tasks e run_*_tasks), limitati a rep 1..max_reps."""
     frames: List[pd.DataFrame] = []
-    re_base = re.compile(rf"^baseline_{re.escape(model)}_(cpu|gpu)_{re.escape(benchmark)}_rep\d+_tasks\.csv$", re.I)
-    re_run = re.compile(rf"^run_{re.escape(model)}_(cpu|gpu)_{re.escape(benchmark)}_.*_tasks\.csv$", re.I)
+    re_base = re.compile(rf"^baseline_{re.escape(model)}_(cpu|gpu)_{re.escape(benchmark)}_rep(\d+)_tasks\.csv$", re.I)
+    re_run = re.compile(rf"^run_{re.escape(model)}_(cpu|gpu)_{re.escape(benchmark)}_.*_rep(\d+)_tasks\.csv$", re.I)
 
     for csv_path in sorted(data_root.rglob("*_tasks.csv")):
         bn = csv_path.name
         if bn.lower().startswith("fallback_partial_"):
             continue
-        if not (re_base.match(bn) or re_run.match(bn)):
+        m_b = re_base.match(bn)
+        m_r = re_run.match(bn) if not m_b else None
+        if not (m_b or m_r):
+            continue
+        rep_from_name = int((m_b or m_r).group(2))
+        if max_reps is not None and max_reps > 0 and rep_from_name > max_reps:
             continue
         df = pd.read_csv(csv_path)
         if df.empty:
             continue
+        if max_reps is not None and max_reps > 0 and "repetition" in df.columns:
+            df = df[pd.to_numeric(df["repetition"], errors="coerce") <= max_reps].copy()
+            if df.empty:
+                continue
         df["device"] = df["device"].astype(str).str.lower()
         df["size"] = df["size"].fillna("N/A").replace({"": "N/A", "nan": "N/A"})
         frames.append(df)
@@ -500,6 +512,7 @@ def compute_doe_importance_and_significance(df_doe: pd.DataFrame) -> pd.DataFram
                     "device": dev,
                     "stressor_class": s_cls,
                     "model_type": "2-way (N*S)" if has_size else "1-way (N)",
+                    "anova_type": "Type III" if has_size else "Type II",
                     "metric": metric,
                     "term": clean_term,
                     "df": int(row["df"]),
@@ -1024,11 +1037,11 @@ def generate_comparative_plots(
     df_doe: pd.DataFrame,
     out_dir: Path,
 ):
-    """Genera i grafici riassuntivi CPU vs GPU: heatmap degradazione, importance DoE e boxplot N100."""
-    # 1. Heatmap degradazione % rispetto alla Baseline (mediato su S per mem/io)
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8), sharey=True)
-    plot_metrics = ["ttft_ms", "per_token_lat_ms", "jitter_ms"]
+    """Genera i grafici riassuntivi DoE: heatmap degradazione (tutte le 4 metriche), importance DoE (4 metriche) e boxplot N_tot."""
+    # 1. Heatmap degradazione % rispetto alla Baseline (mediato su S per mem/io) su tutte le 4 metriche
+    plot_metrics = ["ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"]
     devices = ["cpu", "gpu"]
+    fig, axes = plt.subplots(2, len(plot_metrics), figsize=(22, 8), sharey=True)
 
     for r_idx, dev in enumerate(devices):
         sub_dev = df_desc[(df_desc["device"] == dev) & (df_desc["stressor_class"] != "none")].copy()
@@ -1040,26 +1053,27 @@ def generate_comparative_plots(
                 .pivot(index="stressor_class", columns="num_workers", values=f"{m}_delta_pct")
                 .reindex(columns=[c for c in N_ORDER if c in sub_dev["num_workers"].unique()])
             )
+            cmap = "YlOrRd_r" if m == "throughput_tok_s" else "YlOrRd"
             sns.heatmap(
                 piv,
                 annot=True,
                 fmt=".1f",
-                cmap="YlOrRd",
+                cmap=cmap,
                 ax=ax,
-                cbar=(c_idx == 2),
-                cbar_kws={"label": "Degrado % vs Baseline"} if c_idx == 2 else {},
+                cbar=True,
+                cbar_kws={"label": "Delta % vs Baseline"},
             )
             ax.set_title(f"{dev.upper()} | {METRIC_LABELS[m]}", fontsize=11, fontweight="bold")
             ax.set_xlabel("Carico Worker (N)" if r_idx == 1 else "")
             ax.set_ylabel("Famiglia Stressor" if c_idx == 0 else "")
 
-    fig.suptitle("Degradazione Percentuale (%) rispetto alla Baseline — Confronto CPU vs GPU", fontsize=14, fontweight="bold")
+    fig.suptitle("Variazione Percentuale (%) rispetto alla Baseline — Tutte le Metriche DoE", fontsize=14, fontweight="bold")
     fig.tight_layout()
     fig.savefig(out_dir / "heatmap_degradation_cpu_vs_gpu.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-    # 2. Stacked Bar dell'Importanza dei Fattori DoE (SS/SST %) per TPOT e TTFT
-    for target_m in ["ttft_ms", "per_token_lat_ms"]:
+    # 2. Stacked Bar dell'Importanza dei Fattori DoE (SS/SST %) per tutte e 4 le metriche
+    for target_m in METRICS:
         sub_imp = df_doe_sig[df_doe_sig["metric"] == target_m].copy()
         if sub_imp.empty:
             continue
@@ -1109,7 +1123,7 @@ def generate_comparative_plots(
 
 
 def _plot_cdf_grid(df_tasks: pd.DataFrame, out_dir: Path, complementary: bool = False):
-    """Genera griglia 2x2 ECDF standard o Exceedance Function (1 - CDF log-scale, stile pWCET)."""
+    """Genera griglia 2x4 ECDF standard o Exceedance Function (1 - CDF) su tutte e 4 le metriche."""
     if df_tasks.empty:
         return
 
@@ -1120,16 +1134,17 @@ def _plot_cdf_grid(df_tasks: pd.DataFrame, out_dir: Path, complementary: bool = 
     sub["Stressor"] = sub["stressor_class"].replace({"none": "BASELINE"})
     hue_order = ["BASELINE"] + sorted([s for s in sub["Stressor"].unique() if s != "BASELINE"])
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    ecdf_metrics = ["ttft_ms", "per_token_lat_ms"]
+    ecdf_metrics = ["ttft_ms", "per_token_lat_ms", "throughput_tok_s", "jitter_ms"]
     devices = ["cpu", "gpu"]
+    fig, axes = plt.subplots(2, len(ecdf_metrics), figsize=(22, 10))
 
     for r_idx, dev in enumerate(devices):
         df_dev = sub[sub["device"] == dev]
         for c_idx, m in enumerate(ecdf_metrics):
             ax = axes[r_idx, c_idx]
+            df_plot = df_dev[df_dev[m] > 0].copy() if m != "throughput_tok_s" else df_dev
             sns.ecdfplot(
-                data=df_dev,
+                data=df_plot,
                 x=m,
                 hue="Stressor",
                 hue_order=hue_order,
@@ -1137,31 +1152,35 @@ def _plot_cdf_grid(df_tasks: pd.DataFrame, out_dir: Path, complementary: bool = 
                 linewidth=1.8,
                 ax=ax,
             )
-            ax.set_xscale("log")
+            use_log_x = m != "throughput_tok_s"
+            if use_log_x:
+                ax.set_xscale("log")
             if complementary:
                 ax.set_yscale("log")
                 ax.set_ylim(1e-3, 1.05)
                 ax.axhline(0.05, color="gray", linestyle="--", linewidth=1.0, alpha=0.8)
                 ax.axhline(0.01, color="black", linestyle=":", linewidth=1.1, alpha=0.85)
-                ax.text(ax.get_xlim()[0] * 1.05, 0.055, "p95 (5%)", fontsize=8, color="gray")
-                ax.text(ax.get_xlim()[0] * 1.05, 0.0115, "p99 (1%)", fontsize=8, color="black")
+                x_txt = ax.get_xlim()[0] * (1.05 if use_log_x else 1.0)
+                ax.text(x_txt, 0.055, "p95 (5%)", fontsize=8, color="gray")
+                ax.text(x_txt, 0.0115, "p99 (1%)", fontsize=8, color="black")
                 ax.set_title(f"{dev.upper()} | Exceedance (1 - CDF) {METRIC_LABELS[m]}", fontsize=11, fontweight="bold")
-                ax.set_ylabel("P(X > x) [1 - CDF]")
+                ax.set_ylabel("P(X > x) [1 - CDF]" if c_idx == 0 else "")
             else:
                 ax.axhline(0.95, color="gray", linestyle="--", linewidth=1.0, alpha=0.8)
                 ax.axhline(0.99, color="black", linestyle=":", linewidth=1.1, alpha=0.85)
-                ax.text(ax.get_xlim()[0] * 1.05, 0.955, "p95", fontsize=8, color="gray")
-                ax.text(ax.get_xlim()[0] * 1.05, 0.992, "p99", fontsize=8, color="black")
+                x_txt = ax.get_xlim()[0] * (1.05 if use_log_x else 1.0)
+                ax.text(x_txt, 0.955, "p95", fontsize=8, color="gray")
+                ax.text(x_txt, 0.992, "p99", fontsize=8, color="black")
                 ax.set_title(f"{dev.upper()} | ECDF {METRIC_LABELS[m]} (Baseline vs N_tot)", fontsize=11, fontweight="bold")
-                ax.set_ylabel("Probabilita Cumulativa")
-            ax.set_xlabel(f"{METRIC_LABELS[m]} (scala log)")
+                ax.set_ylabel("Probabilita Cumulativa" if c_idx == 0 else "")
+            ax.set_xlabel(f"{METRIC_LABELS[m]} ({'scala log' if use_log_x else 'scala lineare'})")
             ax.grid(True, which="both", linestyle="--", alpha=0.4)
 
     if complementary:
-        fig.suptitle("Exceedance Function (1 - CDF) per Task — Analisi Real-Time pWCET (Davis & Cucu-Grosjean)", fontsize=14, fontweight="bold")
+        fig.suptitle("Exceedance Function (1 - CDF) per Task — Latenze, Throughput e Jitter (pWCET)", fontsize=14, fontweight="bold")
         out_name = "exceedance_1_minus_cdf_cpu_gpu.png"
     else:
-        fig.suptitle("Empirical CDF (ECDF) delle Latenze per Task — Analisi Tail Latency Real-Time", fontsize=14, fontweight="bold")
+        fig.suptitle("Empirical CDF (ECDF) per Task — Latenze, Throughput e Jitter", fontsize=14, fontweight="bold")
         out_name = "ecdf_cpu_vs_gpu_latency.png"
     fig.tight_layout()
     fig.savefig(out_dir / out_name, dpi=300, bbox_inches="tight")
@@ -1174,23 +1193,135 @@ def generate_ecdf_plots(df_tasks: pd.DataFrame, out_dir: Path):
     _plot_cdf_grid(df_tasks, out_dir, complementary=True)
 
 
+def compute_baseline_normality(df_doe: pd.DataFrame) -> pd.DataFrame:
+    """Verifica normalita (Shapiro-Wilk, skewness, kurtosis) sulle ripetizioni della Baseline."""
+    rows: List[Dict] = []
+    df_base = df_doe[df_doe["stressor_class"] == "none"]
+    for dev, sub in df_base.groupby("device"):
+        for m in METRICS:
+            vals = sub[m].dropna().to_numpy(dtype=float)
+            if len(vals) >= 3:
+                w_stat, p_val = stats.shapiro(vals)
+                sk = float(stats.skew(vals))
+                ku = float(stats.kurtosis(vals))
+            else:
+                w_stat, p_val, sk, ku = np.nan, np.nan, np.nan, np.nan
+            rows.append({
+                "device": dev,
+                "stressor_class": "none",
+                "metric": m,
+                "n_runs": len(vals),
+                "shapiro_w": round(float(w_stat), 4) if pd.notna(w_stat) else np.nan,
+                "shapiro_p": float(f"{p_val:.4e}") if pd.notna(p_val) else np.nan,
+                "normal_005": bool(pd.notna(p_val) and p_val >= 0.05),
+                "skewness": round(sk, 4) if pd.notna(sk) else np.nan,
+                "excess_kurtosis": round(ku, 4) if pd.notna(ku) else np.nan,
+            })
+    return pd.DataFrame(rows)
+
+
+def generate_residual_diagnostics(df_doe: pd.DataFrame, out_dir: Path):
+    """Genera grafici diagnostici dei residui OLS (Residuals vs Fitted e Normal Q-Q Plot) per ogni device e metrica."""
+    df_stress = df_doe[df_doe["stressor_class"] != "none"].copy()
+    if df_stress.empty:
+        return
+
+    for dev in sorted(df_stress["device"].unique()):
+        df_dev = df_stress[df_stress["device"] == dev]
+        stressors = sorted(df_dev["stressor_class"].unique())
+        if not stressors:
+            continue
+
+        for m in METRICS:
+            n_str = len(stressors)
+            nrows = math.ceil(n_str / 2)
+            fig, axes = plt.subplots(nrows, 4, figsize=(20, 4.2 * nrows))
+            if nrows == 1:
+                axes = np.array([axes])
+
+            for idx, s_cls in enumerate(stressors):
+                r_idx = idx // 2
+                c_base = (idx % 2) * 2
+                ax_res = axes[r_idx, c_base]
+                ax_qq = axes[r_idx, c_base + 1]
+
+                df_sub = df_dev[df_dev["stressor_class"] == s_cls].copy()
+                if "duration" in df_sub.columns and "t_tot" in df_sub["duration"].values:
+                    df_sub = df_sub[df_sub["duration"] == "t_tot"].copy()
+
+                valid_sizes = [s for s in df_sub["size"].unique() if s not in ("N/A", "none", "")]
+                has_size = len(valid_sizes) > 1
+                formula_rhs = "C(num_workers) * C(size)" if has_size else "C(num_workers)"
+                model_lbl = "2-way Type III" if has_size else "1-way Type II"
+
+                model = smf.ols(f"{m} ~ {formula_rhs}", data=df_sub).fit()
+                fitted = model.fittedvalues.to_numpy(dtype=float)
+                resid = model.resid.to_numpy(dtype=float)
+                r_std = float(np.std(resid, ddof=1)) if len(resid) > 1 else 1.0
+                std_resid = resid / r_std if r_std > 0 else resid
+
+                sh_w, sh_p = stats.shapiro(resid)
+                cell_cols = ["num_workers", "size"] if has_size else ["num_workers"]
+                cell_groups = [g[m].dropna().to_numpy(dtype=float) for _, g in df_sub.groupby(cell_cols)]
+                cell_groups = [g for g in cell_groups if len(g) > 0]
+                _, lev_p = stats.levene(*cell_groups) if len(cell_groups) >= 2 else (np.nan, np.nan)
+
+                # Residuals vs Fitted
+                ax_res.scatter(fitted, std_resid, alpha=0.65, s=22, color="#1f77b4", edgecolors="none")
+                ax_res.axhline(0.0, color="red", linestyle="--", linewidth=1.2)
+                ax_res.axhline(3.0, color="gray", linestyle=":", linewidth=0.9)
+                ax_res.axhline(-3.0, color="gray", linestyle=":", linewidth=0.9)
+                ax_res.set_title(f"{s_cls.upper()} ({model_lbl}) | Residui vs Fitted", fontsize=10, fontweight="bold")
+                ax_res.set_xlabel(f"Fitted {METRIC_LABELS[m]}", fontsize=9)
+                ax_res.set_ylabel("Residui Standardizzati", fontsize=9)
+                ax_res.grid(True, linestyle="--", alpha=0.4)
+
+                # Normal Q-Q Plot
+                (osm, osr), (slope, intercept, _) = stats.probplot(std_resid, dist="norm")
+                ax_qq.scatter(osm, osr, alpha=0.65, s=22, color="#2ca02c", edgecolors="none")
+                ax_qq.plot(osm, slope * osm + intercept, color="red", linestyle="--", linewidth=1.2)
+                ax_qq.set_title(
+                    f"{s_cls.upper()} | Q-Q (Shapiro W={sh_w:.3f}, p={sh_p:.1e} | Lev p={lev_p:.2f})",
+                    fontsize=9.5,
+                    fontweight="bold",
+                )
+                ax_qq.set_xlabel("Quantili Teorici Normali", fontsize=9)
+                ax_qq.set_ylabel("Residui Ordinati (z)", fontsize=9)
+                ax_qq.grid(True, linestyle="--", alpha=0.4)
+
+            # Nasconde eventuali assi inutilizzati se stressors dispari
+            for j in range(len(stressors), nrows * 2):
+                axes[j // 2, (j % 2) * 2].set_visible(False)
+                axes[j // 2, (j % 2) * 2 + 1].set_visible(False)
+
+            fig.suptitle(
+                f"{dev.upper()} | Diagnostica Residui OLS (Fitted & Normal Q-Q) — {METRIC_LABELS[m]}",
+                fontsize=13,
+                fontweight="bold",
+            )
+            fig.tight_layout()
+            fig.savefig(out_dir / f"residuals_diagnostics_{dev}_{m}.png", dpi=250, bbox_inches="tight")
+            plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analisi statistica inferenziale DoE (CPU & GPU).")
     parser.add_argument("--data-dir", type=str, default=str(PROJECT_ROOT / "resultAGX" / "mmlu"), help="Cartella dati radice.")
     parser.add_argument("--model", type=str, default="slm-1b", help="Modello target (default: slm-1b).")
     parser.add_argument("--benchmark", type=str, default="mmlu", help="Benchmark target (default: mmlu).")
     parser.add_argument("--out-dir", type=str, default=None, help="Cartella output tabelle e grafici.")
+    parser.add_argument("--max-reps", type=int, default=20, help="Numero massimo di ripetizioni (1..N) per baseline e celle stressor (default: 20; 0=tutte).")
     args = parser.parse_args()
 
     data_root = Path(args.data_dir)
     out_dir = Path(args.out_dir) if args.out_dir else (PROJECT_ROOT / "figures" / "statistical_reports" / f"{args.model}_{args.benchmark}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[1/5] Caricamento dati DoE e Task da: {data_root}")
-    df_doe = load_doe_files(data_root, args.model, args.benchmark)
+    print(f"[1/5] Caricamento dati DoE e Task da: {data_root} (max_reps={args.max_reps})")
+    df_doe = load_doe_files(data_root, args.model, args.benchmark, max_reps=args.max_reps)
     if df_doe.empty:
         raise FileNotFoundError(f"Nessun file doe_{args.model}_*_{args.benchmark}_*.csv trovato in {data_root}")
-    df_tasks = load_task_files(data_root, args.model, args.benchmark)
+    df_tasks = load_task_files(data_root, args.model, args.benchmark, max_reps=args.max_reps)
     print(f" -> Caricate {len(df_doe)} righe DoE e {len(df_tasks)} righe Task.")
 
     print("[2/5] Calcolo statistiche descrittive, p95/p99 e Delta% vs Baseline...")
@@ -1221,8 +1352,13 @@ def main():
     if not df_slo.empty:
         df_slo.to_csv(out_dir / "7_slo_attainment_and_fisher.csv", index=False)
 
+    df_base_norm = compute_baseline_normality(df_doe)
+    if not df_base_norm.empty:
+        df_base_norm.to_csv(out_dir / "8_baseline_normality_shapiro.csv", index=False)
+
     generate_comparative_plots(df_desc, df_doe_sig, df_doe, out_dir)
     generate_ecdf_plots(df_tasks, out_dir)
+    generate_residual_diagnostics(df_doe, out_dir)
     print(f"\n[COMPLETATO] Tabelle CSV e grafici statistici salvati in: {out_dir}")
 
 

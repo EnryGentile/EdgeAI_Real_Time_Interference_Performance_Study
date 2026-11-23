@@ -305,16 +305,16 @@ Tutta la pipeline di analisi statistica è automatizzata in **Python** (mediante
 ```powershell
 python statistical_analysis/analyze_doe_significance.py --model slm-1b --benchmark mmlu
 ```
-*(Modifica `--model` e `--benchmark` — es. `--model llm-8b --benchmark mmlu` — oppure specifica `--data-dir` per analizzare altre campagne).*
+*(Modifica `--model` e `--benchmark` — es. `--model llm-8b --benchmark mmlu` — oppure specifica `--data-dir` e `--max-reps 20` per repliche 1..20).*
 
-Lo script esporta in `figures/statistical_reports/<model>_<benchmark>/` **7 tabelle CSV** e **6 grafici comparativi** che implementano le metodologie della letteratura su *Computer Systems Performance Analysis* (Raj Jain, Hoefler & Belli, Arcuri & Briand) e *Real-Time Systems* (Davis & Cucu-Grosjean, Bristot de Oliveira et al., Splitwise/DistServe):
+Lo script esporta in `figures/statistical_reports/<model>_<benchmark>/` **8 tabelle CSV** e **16 grafici** che implementano le metodologie della letteratura su *Computer Systems Performance Analysis* (Raj Jain, Hoefler & Belli, Arcuri & Briand) e *Real-Time Systems* (Davis & Cucu-Grosjean, Bristot de Oliveira et al., Splitwise/DistServe):
 
 1. **Statistica Descrittiva Robusta & Tail Latency (`1_descriptive_and_tail_latency.csv`)**:
    - Calcola Media aritmetica (per costi temporali: TTFT, TPOT, Jitter), **Media Armonica** (`scipy.stats.hmean`, obbligatoria per i *rates* come Throughput `tok/s`), Deviazione Standard, **CoV** ($s/\bar{x}$), **Intervalli di Confidenza al 95%** sia per la media (Student's $t$) sia non parametrici per la mediana (formula ai ranghi di Le Boudec), Mediana, IQR, percentili di coda (**P90, P95, P99**) e degradazione percentuale $\Delta\%$ rispetto alla Baseline.
-2. **Modello Lineare DoE, Importanza (`SS/SST %`) & Test delle Ipotesi (`2_doe_importance_and_significance.csv`)**:
-   - Stima il modello lineare OLS (`statsmodels`) 1-way (`num_workers`) per `cpu`, `cache`, `os`, `interrupt` e 2-way con interazione (`num_workers * size`) per `mem` e `io`.
+2. **Modello Lineare DoE, Importanza (`SS/SST %`), Normalità Baseline & Residui (`2_doe_importance_and_significance.csv`, `8_baseline_normality_shapiro.csv`)**:
+   - Stima il modello lineare OLS (`statsmodels`) 1-way (`num_workers`, **ANOVA Type II**) per `cpu`, `cache`, `os`, `interrupt` e 2-way con interazione (`num_workers * size`, **ANOVA Type III**) per `mem` e `io`.
    - Calcola la quota di varianza spiegata (**Allocation of Variation** $SS_{\text{Effect}} / SS_{\text{Total}} \times 100\%$) per ogni fattore, interazione ed errore sperimentale.
-   - Verifica automaticamente le due assunzioni parametriche sui residui e sulle celle: **Shapiro-Wilk** (normalità) e **Test di Levene** (omoschedasticità). Se entrambe sono soddisfatte ($p \ge 0.05$) usa l'**ANOVA F-test**, altrimenti commuta automaticamente sul test non parametrico **Kruskal-Wallis**.
+   - Verifica automaticamente le due assunzioni parametriche sui residui e sulle celle: **Shapiro-Wilk** (normalità, sia su Baseline che sui residui OLS) e **Test di Levene** (omoschedasticità). Se entrambe sono soddisfatte ($p \ge 0.05$) usa l'**ANOVA F-test**, altrimenti commuta automaticamente sul test non parametrico **Kruskal-Wallis**.
 3. **Significatività vs Baseline & Effect Size (`3_baseline_vs_stressor_significance.csv`)**:
    - Confronta ogni configurazione di stressor con la Baseline del rispettivo device tramite **Mann-Whitney U test** (con correzione per confronti multipli di **Holm-Bonferroni**) e Welch's t-test, affiancando gli indici standardizzati di **Effect Size**: **Cliff's $\delta$** e **Vargha-Delaney $\hat{A}_{12}$** (indispensabili per distinguere la significatività statistica dalla rilevanza pratica).
 4. **Correlazioni Hardware `vmstat` $\leftrightarrow$ Prestazioni LLM (`4_hardware_vmstat_correlations.csv`)**:
@@ -325,22 +325,23 @@ Lo script esporta in `figures/statistical_reports/<model>_<benchmark>/` **7 tabe
    - Confronta tutte le coppie interne `25% N_tot` $\leftrightarrow$ `50% N_tot` $\leftrightarrow$ `75% N_tot` $\leftrightarrow$ `N_tot` mediante **Tukey HSD** e **Mann-Whitney U con Holm** + $\hat{A}_{12}$ per individuare esattamente la soglia di saturazione (*knee*).
 7. **SLO Attainment (%) & Fisher's Exact Test (`7_slo_attainment_and_fisher.csv`)**:
    - Misura la percentuale di task entro due deadline relative alla Baseline ($1.5\times$ e $2.0\times$ `p95_baseline`) e verifica le differenze nei tassi di violazione SLO tramite **Fisher's Exact Test** (con Odds Ratio $\psi$ e correzione Holm).
-8. **Grafici Comparativi & Tail Latency Real-Time**:
-   - `heatmap_degradation_cpu_vs_gpu.png`: mappa termica del degrado `%` CPU vs GPU su tutti gli stressor.
-   - `doe_importance_ss_pct_*.png`: scomposizione della varianza spiegata ($SS/SST\%$) per TTFT e TPOT.
+8. **Grafici Comparativi, Diagnostica Residui & Tail Latency Real-Time**:
+   - `heatmap_degradation_cpu_vs_gpu.png`: mappa termica del degrado `%` CPU vs GPU su tutte e 4 le metriche.
+   - `doe_importance_ss_pct_*.png`: scomposizione della varianza spiegata ($SS/SST\%$) per TTFT, TPOT, Throughput e Jitter.
+   - `residuals_diagnostics_<dev>_<metric>.png`: grafici *Residuals vs Fitted* e *Normal Q-Q Plot* per ciascun device e metrica.
    - `boxplot_baseline_vs_Ntot_cpu_gpu.png`: distribuzione Baseline vs carico massimo `N_tot`.
-   - `ecdf_cpu_vs_gpu_latency.png` e **`exceedance_1_minus_cdf_cpu_gpu.png`**: curve **ECDF** ed **Exceedance Function (`1 - CDF` su scala logaritmica)** con soglie `p95` e `p99` stile pWCET.
+   - `ecdf_cpu_vs_gpu_latency.png` e **`exceedance_1_minus_cdf_cpu_gpu.png`**: curve **ECDF** ed **Exceedance Function (`1 - CDF` su scala logaritmica)** con soglie `p95` e `p99` stile pWCET su tutte e 4 le metriche.
 
 #### 2. Generazione Grafici di Degradazione Metriche LLM (`plot_llm_metrics.py`)
 ```powershell
-python statistical_analysis/plot_llm_metrics.py --model slm-1b --benchmark mmlu
+python statistical_analysis/plot_llm_metrics.py --model slm-1b --benchmark mmlu --max-reps 20
 ```
-*Genera i pointplot con intervallo di confidenza al 95% per TTFT, TPOT, throughput e jitter in `figures/llm_metrics/`, confrontando le curve di carico $N$ e working-set $S$ con la linea tratteggiata della rispettiva Baseline.*
+*Genera i pointplot con intervallo di confidenza al 95% per TTFT, TPOT, throughput e jitter in `figures/llm_metrics/`, confrontando le curve di carico $N$ e working-set $S$ con la linea tratteggiata della rispettiva Baseline (default `--max-reps 20`).*
 
 #### 3. Generazione Grafici dei Colli di Bottiglia Hardware (`plot_hardware_bottlenecks.py`)
 ```powershell
-python statistical_analysis/plot_hardware_bottlenecks.py --model slm-1b --benchmark mmlu
+python statistical_analysis/plot_hardware_bottlenecks.py --model slm-1b --benchmark mmlu --max-reps 20
 ```
-*Genera i grafici in `figures/hardware_bottlenecks/<model>_<device>_<bench>/` separando nettamente CPU e GPU per le metriche `vmstat` a 1 Hz: saturazione CPU (`%us`, `%sy`, `%id`, `%wa`), memoria/swap, blocchi I/O (`bi`, `bo`), context switch (`cs`), interrupt (`in`) e temperature.*
+*Genera per ogni stressor una figura unificata con griglia `2 × 3` in `figures/hardware_bottlenecks/<model>_<device>_<bench>/` separando nettamente CPU e GPU per le metriche `vmstat` a 1 Hz: CPU, Memoria, I/O, Processi, Sistema e Termica.*
 
 *(Nota: gli script JMP `importance_significance.jsl` e `distributions.jsl` sono mantenuti solo come alternativa grafica opzionale per JMP; tutta la pipeline statistica completa è coperta dagli script Python sopra).*

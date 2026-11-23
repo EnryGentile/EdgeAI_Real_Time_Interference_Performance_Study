@@ -52,8 +52,14 @@ def _default_search_roots(custom_dir: str | None = None) -> list[Path]:
     return roots or [PROJECT_ROOT]
 
 
-def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str, search_roots: list[Path] | None = None) -> dict:
-    """Carica le medie della baseline dal file doe_*_none.csv corrispondente, cercando anche ricorsivamente in resultAGX/."""
+def load_baseline_mean(
+    model_tag: str,
+    device_tag: str,
+    bench_tag: str,
+    search_roots: list[Path] | None = None,
+    max_reps: int | None = 20,
+) -> dict:
+    """Carica le medie della baseline dal file doe_*_none.csv corrispondente, limitato alle prime max_reps ripetizioni."""
     roots = search_roots or _default_search_roots()
     target_name = f"doe_{model_tag}_{device_tag}_{bench_tag}_none.csv"
     matches: list[Path] = []
@@ -67,6 +73,8 @@ def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str, search_r
     if matches:
         try:
             df_base = pd.read_csv(matches[0])
+            if max_reps is not None and max_reps > 0:
+                df_base = df_base.head(max_reps)
             for m_col, _, _ in METRICS:
                 if m_col in df_base.columns:
                     baseline_means[m_col] = df_base[m_col].mean()
@@ -75,7 +83,13 @@ def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str, search_r
     return baseline_means
 
 
-def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t_tot", search_roots: list[Path] | None = None):
+def plot_doe_file(
+    csv_path: Path,
+    output_subdir: Path,
+    target_duration: str = "t_tot",
+    search_roots: list[Path] | None = None,
+    max_reps: int | None = 20,
+):
     """Genera i grafici di degradazione per un singolo file DoE."""
     if not csv_path.exists():
         print(f" [AVVISO] File non trovato: {csv_path}")
@@ -92,6 +106,14 @@ def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t
             print(f" -> Filtro applicato: selezionati {len(df)} record con duration='{target_duration}'")
         else:
             print(f" -> duration='{target_duration}' non trovato, uso i record disponibili ({dur_vals})")
+
+    if max_reps is not None and max_reps > 0 and not df.empty:
+        grp_cols = [c for c in ["stressor_class", "num_workers", "size"] if c in df.columns]
+        if grp_cols:
+            df = df.groupby(grp_cols, dropna=False, sort=False).head(max_reps).copy()
+        else:
+            df = df.head(max_reps).copy()
+        print(f" -> Limite ripetizioni applicato: max {max_reps} rep per cella ({len(df)} record)")
 
     if df.empty:
         print(f" [AVVISO] Nessun record trovato in {csv_path.name} con duration='{target_duration}'.")
@@ -117,7 +139,7 @@ def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t
     bench_tag = parts[2] if len(parts) > 2 else "mmlu"
     stressor_tag = "_".join(parts[3:]) if len(parts) > 3 else "stressor"
 
-    baseline_means = load_baseline_mean(model_tag, device_tag, bench_tag, search_roots=search_roots)
+    baseline_means = load_baseline_mean(model_tag, device_tag, bench_tag, search_roots=search_roots, max_reps=max_reps)
 
     output_subdir.mkdir(parents=True, exist_ok=True)
 
@@ -191,6 +213,7 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Filtra per device (es. cpu, gpu).")
     parser.add_argument("--benchmark", type=str, default=None, help="Filtra per benchmark (es. mmlu, spider).")
     parser.add_argument("--duration", type=str, default="t_tot", help="Durata da filtrare (default: t_tot).")
+    parser.add_argument("--max-reps", type=int, default=20, help="Numero massimo di ripetizioni (1..N) da considerare per cella e baseline (default: 20; 0=tutte).")
     args = parser.parse_args()
 
     search_roots = _default_search_roots(args.data_dir)
@@ -224,7 +247,7 @@ def main():
 
     for csv_file in target_files:
         subdir = FIGURES_DIR / csv_file.stem.replace("doe_", "")
-        plot_doe_file(csv_file, subdir, target_duration=args.duration, search_roots=search_roots)
+        plot_doe_file(csv_file, subdir, target_duration=args.duration, search_roots=search_roots, max_reps=args.max_reps)
 
     print(f"\n[COMPLETATO] Tutti i grafici sono stati generati in: {FIGURES_DIR}")
 

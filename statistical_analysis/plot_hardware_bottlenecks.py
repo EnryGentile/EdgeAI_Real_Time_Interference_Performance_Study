@@ -50,6 +50,7 @@ def parse_timeseries_data(
     model_filter: str | None = None,
     device_filter: str | None = None,
     bench_filter: str | None = None,
+    max_reps: int | None = 20,
 ) -> pd.DataFrame:
     """Carica e aggrega le time-series vmstat cercando ricorsivamente in resultAGX/ o nella cartella indicata."""
     ts_files: list[str] = []
@@ -108,6 +109,8 @@ def parse_timeseries_data(
             continue
         if bench_filter and bench_val.lower() != bench_filter.lower():
             continue
+        if max_reps is not None and max_reps > 0 and int(rep) > max_reps:
+            continue
 
         try:
             sub_df = pd.read_csv(filepath)
@@ -159,51 +162,42 @@ def plot_hardware_groups(df_hw: pd.DataFrame, target_duration: str = "t_tot"):
 
         for s in stressors:
             is_3d = s.lower() in STRESSOR_WITH_SIZE
-            sizes = S_ORDER if is_3d else ["N/A"]
-            df_sub_ctx = df_ctx.copy()
-            if is_3d and "size" in df_sub_ctx.columns:
-                df_sub_ctx["size"] = pd.Categorical(df_sub_ctx["size"], categories=S_ORDER + ["N/A"], ordered=True)
+            df_s = df_ctx[df_ctx["stressor"] == s].copy()
+            sub = df_s.groupby("n_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
 
-            for grp_key, grp_title, col_tuples in METRIC_GROUPS:
-                ncols = len(sizes)
-                fig, axes = plt.subplots(
-                    nrows=1,
-                    ncols=ncols,
-                    figsize=(5.5 * ncols, 4.5),
-                    sharey=False,
-                    squeeze=False
-                )
+            fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(18, 9.5), squeeze=False)
+            has_plotted_any = False
 
-                has_plotted_any = False
+            for g_idx, (grp_key, grp_title, col_tuples) in enumerate(METRIC_GROUPS):
+                ax = axes[g_idx // 3, g_idx % 3]
+                grp_has_data = False
+                for col_name, label in col_tuples:
+                    if col_name in sub.columns and sub[col_name].notna().any():
+                        ax.plot(sub.index, sub[col_name], marker='o', linewidth=1.8, label=label)
+                        has_plotted_any = True
+                        grp_has_data = True
 
-                for c_idx, sz in enumerate(sizes):
-                    ax = axes[0, c_idx]
-                    cond = (df_sub_ctx["stressor"] == s)
-                    if is_3d:
-                        cond = cond & (df_sub_ctx["size"] == sz)
-
-                    sub = df_sub_ctx[cond].groupby("n_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
-
-                    for col_name, label in col_tuples:
-                        if col_name in sub.columns and sub[col_name].notna().any():
-                            ax.plot(sub.index, sub[col_name], marker='o', linewidth=1.8, label=label)
-                            has_plotted_any = True
-
-                    header = f"{m_val.upper()} {d_val.upper()} | {s.upper()} (t_tot)" + (f" | {sz}" if is_3d else "")
-                    ax.set_title(header, fontsize=11, fontweight="bold")
+                ax.set_title(grp_title, fontsize=11, fontweight="bold")
+                if g_idx // 3 == 1:
                     ax.set_xlabel("Livelli Carico Worker (N)", fontsize=10, fontweight="bold")
-                    if c_idx == 0:
-                        ax.set_ylabel("Valore Medio", fontsize=10, fontweight="bold")
-                    ax.grid(True, linestyle="--", alpha=0.6)
-                    ax.legend(loc="best", frameon=True, fontsize=9)
+                if g_idx % 3 == 0:
+                    ax.set_ylabel("Valore Medio", fontsize=10, fontweight="bold")
+                ax.grid(True, linestyle="--", alpha=0.6)
+                if grp_has_data:
+                    ax.legend(loc="best", frameon=True, fontsize=8.5)
 
-                if has_plotted_any:
-                    fig.suptitle(f"{grp_title} - {m_val.upper()} ({d_val.upper()}) - Stressor {s.upper()}", fontsize=13, fontweight="bold")
-                    fig.tight_layout()
-                    out_path = ctx_out_dir / f"{ctx_tag}_{s}_{grp_key}_bottleneck.png"
-                    fig.savefig(out_path, dpi=300, bbox_inches="tight")
-                    print(f"   [OK] Grafico hardware salvato: {out_path.name}")
-                plt.close(fig)
+            if has_plotted_any:
+                mode_note = "t_tot, media su S25/S50/S75" if is_3d else "t_tot"
+                fig.suptitle(
+                    f"Colli di Bottiglia Hardware — {m_val.upper()} ({d_val.upper()}) | Stressor {s.upper()} ({mode_note})",
+                    fontsize=13,
+                    fontweight="bold",
+                )
+                fig.tight_layout()
+                out_path = ctx_out_dir / f"{ctx_tag}_{s}_bottleneck.png"
+                fig.savefig(out_path, dpi=300, bbox_inches="tight")
+                print(f"   [OK] Grafico hardware unificato salvato: {out_path.name}")
+            plt.close(fig)
 
 
 def plot_master_microarchitecture(target_duration: str = "t_tot"):
@@ -295,6 +289,7 @@ def main():
     parser.add_argument("--device", type=str, default=None, help="Filtra per device (es. cpu, gpu).")
     parser.add_argument("--benchmark", type=str, default=None, help="Filtra per benchmark (es. mmlu, spider).")
     parser.add_argument("--duration", type=str, default="t_tot", help="Durata da filtrare (default: t_tot).")
+    parser.add_argument("--max-reps", type=int, default=20, help="Numero massimo di ripetizioni (1..N) da considerare (default: 20; 0=tutte).")
     args = parser.parse_args()
 
     search_dir = Path(args.data_dir) if args.data_dir else None
@@ -305,6 +300,7 @@ def main():
         model_filter=args.model,
         device_filter=args.device,
         bench_filter=args.benchmark,
+        max_reps=args.max_reps,
     )
     plot_hardware_groups(df_hw, target_duration=args.duration)
     plot_master_microarchitecture(target_duration=args.duration)

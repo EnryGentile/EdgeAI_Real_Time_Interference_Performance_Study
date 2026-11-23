@@ -1,0 +1,508 @@
+================================================================================
+ANALISI STATISTICA SPERIMENTALE — SLM-1B SU GPU — BENCHMARK MMLU (TRACCIA A1)
+================================================================================
+Modello         : SLM-1B (Llama-3.2-1B-Instruct-Q4_K_M)
+Dispositivo     : GPU (NVIDIA Jetson AGX Orin, offload completo -ngl 99)
+Benchmark       : MMLU (30 campioni/task per run, carico prefill-heavy, max_tokens=64)
+Ripetizioni     : Solo rep 1..20 per TUTTO (Baseline e tutte le 40 celle Stressor)
+Dataset Totale  : 820 run sperimentali = 24.600 task totali
+                  - Baseline (none): 20 run (600 task)
+                  - Stressor 2D (cpu, cache, os, interrupt): 4x80 = 320 run (9.600 task)
+                  - Stressor 3D (mem, io): 2x240 = 480 run (14.400 task)
+Fonti Dati CSV  : figures/statistical_reports/slm-1b_mmlu/1..8_*.csv (righe device=gpu)
+Protocollo      : Riavvio hardware tra run + transitorio post-boot (--max-reps 20).
+
+================================================================================
+SEZIONE 0: METODOLOGIA STATISTICA — TUTTI I TEST UTILIZZATI E PERCHE'
+================================================================================
+
+Tutti i test previsti dalla pipeline (analyze_doe_significance.py) vengono eseguiti
+per rispondere a una domanda specifica della caratterizzazione prestazionale real-time:
+
+0.1 Test i.i.d. e di Stazionarieta' (5_stationarity_and_iid_tests.csv):
+  - PERCHE': Prima di applicare ANOVA o test parametrici/non-parametrici tra gruppi,
+    bisogna verificare che le 20 ripetizioni ordinate nel tempo siano indipendenti e
+    identicamente distribuite (i.i.d.), cioe' prive di memoria residua tra un reboot
+    e il successivo o di derive termiche lungo la campagna.
+  - Test eseguiti:
+    * Ljung-Box (lag 1 e lag 2): verifica assenza di autocorrelazione seriale tra run
+      consecutive (H0: residui incorrelati -> i.i.d. ok se p >= 0.05).
+    * Wald-Wolfowitz Runs Test: verifica la casualita' dell'ordine di oscillazione sopra/sotto
+      la mediana lungo le 20 repliche (H0: sequenza casuale -> ok se p >= 0.05).
+    * KPSS Test (Kwiatkowski-Phillips-Schmidt-Shin): verifica la stazionarieta' in livello,
+      cioe' assenza di trend o drift termico crescente (H0: serie stazionaria -> ok se p >= 0.05).
+    * Two-Sample Kolmogorov-Smirnov (1a meta' rep 1..10 vs 2a meta' rep 11..20): verifica
+      che la distribuzione nella prima meta' della campagna coincida con quella della seconda
+      meta' (H0: stessa distribuzione -> ok se p >= 0.05).
+
+0.2 Analisi di Normalita' e Diagnostica dei Residui (2_*.csv, 8_*.csv, residuals_diagnostics_*):
+  - PERCHE': I test parametrici (ANOVA F-test, Tukey HSD, t-test) assumono che i dati o i
+    residui del modello lineare siano distribuiti normalmente e abbiano varianza uniforme tra
+    le celle (omoschedasticita'). Se tali assunzioni falliscono (ad es. per outlier o code
+    asimmetriche), l'ANOVA puo' perdere potenza (falsi negativi) o distorcere i p-value.
+  - Test e grafici eseguiti:
+    * Shapiro-Wilk Test (W, p) + Skewness / Kurtosis sulla Baseline (8_baseline_normality_shapiro.csv)
+      e sui residui standardizzati dei modelli OLS DoE (2_doe_importance_and_significance.csv):
+      verifica la normalita' (H0: distribuzione normale -> ok se p >= 0.05).
+    * Test di Levene (F, p) sui gruppi/celle sperimentali: verifica l'omoschedasticita', cioe'
+      l'uguaglianza delle varianze tra livelli/celle (H0: varianze uguali -> ok se p >= 0.05).
+    * Grafici diagnostici [residuals_diagnostics_gpu_<metrica>.png]:
+      - Residui Standardizzati vs Fitted: verifica assenza di pattern non lineari, assenza di
+        eteroschedasticita' ("a imbuto") ed evidenzia outlier oltre +-3 sigma.
+      - Normal Q-Q Plot: confronta i quantili empirici dei residui ordinati con quelli teorici
+        di una Normale N(0,1) per diagnosticare deviazioni nelle code (heavy tails).
+
+0.3 Modelli DoE, Tipologia di ANOVA scelta e Allocation of Variation (2_doe_importance_*.csv):
+  - PERCHE': Quantifica quanta varianza della metrica dipende effettivamente dai fattori
+    sperimentali rispetto al rumore casuale (Errore Sperimentale) e stabilisce se il livello
+    di carico ha effetto statisticamente significativo.
+  - QUALE ANOVA VIENE UTILIZZATA E PERCHE':
+    * Stressor 2D (cache, cpu, interrupt, os -> solo fattore N = num_workers):
+      Viene stimato un modello lineare OLS ad un fattore (metric ~ C(num_workers)) con
+      **One-Way ANOVA a Somma dei Quadrati di Type II**. Con un solo fattore e celle
+      bilanciate (20 repliche x 4 livelli), Type II e' lo standard per il test dell'effetto
+      principale N.
+    * Stressor 3D (mem, io -> fattori N = num_workers e S = size + interazione N:S):
+      Viene stimato un modello lineare fattoriale OLS completo con interazione
+      (metric ~ C(num_workers) * C(size)) utilizzando **Two-Way Factorial ANOVA con Somma dei
+      Quadrati di Type III**. La scelta di **Type III** (somme dei quadrati parziali/marginali)
+      e' fondamentale nei piani fattoriali con interazione perche' valuta ogni effetto
+      principale (N, S) e l'interazione (N:S) al netto di tutti gli altri termini del modello.
+  - Regola adattiva ANOVA F-test vs Kruskal-Wallis (H0: medie/ranghi uguali tra livelli):
+    * Se Shapiro-Wilk (p >= 0.05) E Levene (p >= 0.05) sono entrambi soddisfatti -> si adotta
+      l'**ANOVA F-test** parametrico.
+    * Se almeno una delle due assunzioni e' violata -> il test F e' affiancato e sostituito per
+      la decisione dal test non parametrico **Kruskal-Wallis** sui ranghi (robusto a code
+      pesanti e outlier, immune allo schiacciamento di F da residui estremi).
+    * Nota per l'interazione 2-way N:S: non esistendo un analogo Kruskal-Wallis univariato per
+      il termine di interazione, viene riportato il p-value OLS Type III segnalandolo come
+      "ANOVA_F (assumptions violated)" quando i residui/varianze violano le ipotesi.
+  - Allocation of Variation: calcola R^2 del modello e SS_Term / SS_Total * 100 (importance_pct).
+
+0.4 Test Baseline vs Singole Celle Stressor & Effect Size (3_baseline_vs_stressor_significance.csv):
+  - PERCHE': Determina quali configurazioni (N, S) peggiorano davvero rispetto alla Baseline e
+    quanto e' grande l'effetto pratico al di la' del solo p-value.
+  - Test eseguiti:
+    * Mann-Whitney U test (non parametrico) con correzione per confronti multipli di
+      **Holm-Bonferroni** (controlla il Family-Wise Error Rate sulle 40 celle x metrica).
+    * **Welch's t-test** (t-test parametrico a varianze disuguali): affiancato come controllo di
+      coerenza sul confronto delle medie.
+    * **Cliff's delta** e **Vargha-Delaney A12**: indici non parametrici di Effect Size
+      (negligible / small / medium / large) per distinguere variazioni statisticamente
+      significative (p < 0.05) da variazioni praticamente rilevanti.
+
+0.5 Confronti Post-Hoc tra Livelli N (6_posthoc_worker_levels.csv):
+  - PERCHE': Quando l'ANOVA/Kruskal-Wallis su N risulta significativo, serve identificare
+    quali coppie tra 25%, 50%, 75%, 100% N_tot differiscono (individuazione del "knee"/soglia).
+  - Test eseguiti: **Tukey HSD** (parametrico) + **Mann-Whitney U a coppie con correzione
+    Holm-Bonferroni** e **A12** (non parametrico).
+
+0.6 Statistica Descrittiva Robusta, Aggregazione DoE, Tail Latency, SLO e Hardware (1_*.csv, 4_*.csv, 7_*.csv):
+  - **Aggregazione per riga DoE (Media vs Mediana)**: Nel file DoE ogni riga corrisponde a una
+    singola ripetizione (media aritmetica dei 30 task della run, 20 righe per cella). L'uso
+    della media per run e' giustificato dalla dispersione bassissima tra repliche (CoV <= 0.24%
+    in Baseline) e dalla simmetria; laddove compaiono outlier isolati (es. IO `rep19`), il
+    fallback automatico su **Kruskal-Wallis** sui ranghi protegge comunque l'inferenza.
+  - **Media Armonica** (per throughput_tok_s, rate) e **Media Aritmetica** (per tempi/jitter),
+    **CoV** (std/mean), **IC 95% Media** (intervallo `[inf, sup]` con t di Student, df=19) e
+    **IC 95% Mediana** (intervallo `[inf, sup]` non parametrico ai ranghi di Le Boudec/Hoefler
+    sui 600 task: quando i task sono molto concentrati attorno alla mediana, `inf` e `sup`
+    coincidono), **IQR, p90, p95, p99**.
+  - **ECDF e Exceedance Function (1 - CDF in scala logaritmica)** stile pWCET (Davis &
+    Cucu-Grosjean) per visualizzare le code p95/p99 per singolo task.
+  - **SLO Attainment (%) & Fisher's Exact Test** (con Odds Ratio e Holm-Bonferroni) rispetto a
+    deadline 1.5x (strict) e 2.0x (relaxed) del p95 Baseline, per testare l'aumento di
+    violazioni SLO.
+  - **Correlazione per ranghi di Spearman (rho)** tra telemetria hardware vmstat a 1 Hz e
+    metriche LLM per identificare la root-cause fisica (CPU, kernel, IRQ, I/O, memoria, termica).
+
+Nota sui nomi delle immagini citate:
+  - figures/statistical_reports/slm-1b_mmlu/   (solo i pannelli/serie GPU)
+  - figures/llm_metrics/slm-1b_gpu_mmlu_<cls>/
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/
+
+
+================================================================================
+SEZIONE 1: ANALISI DELLA BASELINE (stressor_class = none, 0% N_tot, rep 1..20)
+================================================================================
+
+1.1 Immagini utilizzate per la Baseline GPU:
+  - figures/statistical_reports/slm-1b_mmlu/boxplot_baseline_vs_Ntot_cpu_gpu.png (serie GPU)
+  - figures/statistical_reports/slm-1b_mmlu/ecdf_cpu_vs_gpu_latency.png (pannelli GPU in basso)
+  - figures/statistical_reports/slm-1b_mmlu/exceedance_1_minus_cdf_cpu_gpu.png (pannelli GPU in basso)
+  - Linee tratteggiate verdi di riferimento ("Baseline senza stress") nei grafici:
+    degradation_slm-1b_gpu_mmlu_<stressor>_<metrica>.png
+
+1.2 Verifica i.i.d. e Stazionarieta' (5_stationarity_and_iid_tests.csv, n_reps = 20):
+  - ttft_ms:
+    * Ljung-Box: lag1 p = 0.7592, lag2 p = 0.7892 -> independent_lb = True
+    * Runs Test: p = 0.8183 | KPSS Test: p = 0.1000 (stationary_kpss = True)
+    * Two-Sample KS (1a vs 2a meta'): p = 0.7869 -> identically_dist_ks = True
+  - per_token_lat_ms (TPOT):
+    * Ljung-Box: lag1 p = 0.7247, lag2 p = 0.9156 -> independent_lb = True
+    * Runs Test: p = 0.4907 | KPSS Test: p = 0.1000 (stationary_kpss = True)
+    * Two-Sample KS (1a vs 2a meta'): p = 0.9945 -> identically_dist_ks = True
+  -> CONCLUSIONE i.i.d.: Tutti i test di indipendenza, casualita', stazionarieta' e omogeneita'
+     tra meta' campagna sono ampiamente soddisfatti (tutti i p >> 0.05).
+
+1.2b Analisi di Normalita' della Baseline (8_baseline_normality_shapiro.csv, 20 run):
+  - ttft_ms          : Shapiro-Wilk W = 0.9777, p = 0.9017 (Normal = True), skew = +0.0687, kurt = -0.7581
+  - per_token_lat_ms : Shapiro-Wilk W = 0.9103, p = 0.0646 (Normal = True), skew = +0.3654, kurt = -1.0312
+  - throughput_tok_s : Shapiro-Wilk W = 0.9141, p = 0.0762 (Normal = True), skew = -0.3599, kurt = -1.0633
+  - jitter_ms        : Shapiro-Wilk W = 0.9304, p = 0.1572 (Normal = True), skew = +0.8274, kurt = +0.2201
+  -> CONCLUSIONE NORMALITA': Tutte e 4 le metriche della Baseline GPU seguono una
+     distribuzione compatibile con la Normale (Shapiro-Wilk p >= 0.0646 > 0.05).
+
+1.3 Statistiche Descrittive, Dispersione e Tail Latency (20 run, 600 task):
+  Fonte: figures/statistical_reports/slm-1b_mmlu/1_descriptive_and_tail_latency.csv
+  - TTFT (ttft_ms):
+    * Media run    : 25.5585 ms (std = 0.0603 ms, CoV = 0.0024 = 0.24%)
+    * IC 95% media : [25.5302, 25.5867] ms (t-Student df=19)
+    * Mediana task : 24.8359 ms (IC 95% Le Boudec [24.7840, 25.1008] ms, IQR = 3.0844 ms)
+    * Tail latency : p90 = 28.9810 ms | p95 = 31.9050 ms | p99 = 32.1935 ms
+  - TPOT / Per-Token Latency (per_token_lat_ms):
+    * Media run    : 8.4498 ms/tok (std = 0.0069 ms, CoV = 0.0008 = 0.08%)
+    * IC 95% media : [8.4465, 8.4530] ms/tok
+    * Mediana task : 8.3893 ms/tok (IC 95% Le Boudec [8.3893, 8.3893] ms — estremo inferiore
+                     e superiore coincidono per la forte concentrazione di ties attorno alla mediana; IQR = 0.0141 ms)
+    * Tail latency : p90 = 8.4818 ms | p95 = 8.6730 ms | p99 = 9.7182 ms
+  - Throughput (throughput_tok_s):
+    * Media aritm. : 118.4332 tok/s | Media armonica: 118.4331 tok/s
+    * Dispersione  : std = 0.0969 tok/s, CoV = 0.0008 (0.08%), IC 95% [118.3878, 118.4785]
+    * Mediana task : 119.20 tok/s (IC 95% Le Boudec [119.20, 119.20], IQR = 0.20, p90 = 119.40, p95 = 119.40, p99 = 119.50)
+  - Inter-Token Jitter (jitter_ms):
+    * Media run    : 1.5734 ms (std = 0.0020 ms, CoV = 0.0013 = 0.13%)
+    * IC 95% media : [1.5724, 1.5743] ms
+    * Mediana task : 1.3233 ms (IC 95% [1.0847, 1.5150] ms, IQR = 1.2994 ms)
+    * Tail latency : p90 = 2.4271 ms | p95 = 2.9839 ms | p99 = 2.9905 ms
+
+  Nota tecnica sull'effetto del task_index=12 in Baseline su TPOT:
+  In tutte e 20 le repliche Baseline GPU, al solo task_index=12 il modello emette esattamente
+  1 token (output_tokens=1, TPOT ~9.72-9.78 ms per mancato ammortamento dell'overhead di
+  chiusura turno su un solo token, visibile come scalino blu a ~9.72 ms in
+  [exceedance_1_minus_cdf_cpu_gpu.png] pannello GPU | TPOT). Cio' sposta la media TPOT
+  Baseline da 8.4062 ms (senza task 12) a 8.4498 ms (+0.044 ms) ed e' il motivo per cui
+  stressor neutri in decode (CPU, CACHE, INTERRUPT), che sul task 12 emettono 4 token,
+  mostrano un apparente -0.2%/-0.3% sulla media TPOT pur avendo mediana task >= Baseline.
+
+1.4 Stato Hardware Baseline (telemetria vmstat GPU, rep 1..20) e Soglie SLO:
+  - Utilizzo CPU host medio : us = 0.38%, sy = 0.11%, id = 98.89%, wa = 0.01%
+  - Attivita' OS / I/O      : cs = 1.843/s, in = 1.625/s, bo = 33.9 blk/s
+  - Termica                 : temp CPU media = 51.45 C, temp GPU media = 51.84 C, throttled = 0
+  - Soglie SLO derivate (7_slo_attainment_and_fisher.csv):
+    * ttft_ms          : Strict (1.5x p95) = 47.86 ms | Relaxed (2.0x p95) = 63.81 ms
+    * per_token_lat_ms : Strict (1.5x p95) = 13.01 ms | Relaxed (2.0x p95) = 17.35 ms
+
+1.5 Conclusioni sulla Baseline GPU (con riferimento alle immagini):
+  - In [boxplot_baseline_vs_Ntot_cpu_gpu.png] (serie GPU) i box risultano compatti e quasi
+    privi di dispersione (CoV <= 0.24%); in [ecdf_cpu_vs_gpu_latency.png] (pannelli GPU in
+    basso) oltre l'85% dei task converge a ~8.39 ms/tok in TPOT (~119.2 tok/s); in
+    [exceedance_1_minus_cdf_cpu_gpu.png] (curva blu BASELINE) la coda p99 chiude a 32.19 ms
+    su TTFT e 9.72 ms su TPOT.
+
+
+================================================================================
+SEZIONE 2: PANORAMICA GENERALE DEGLI STRESSOR SU GPU (rep 1..20)
+================================================================================
+
+2.1 Immagini utilizzate per la visione d'insieme GPU:
+  - figures/statistical_reports/slm-1b_mmlu/heatmap_degradation_cpu_vs_gpu.png (riga GPU | 4 metriche)
+  - figures/statistical_reports/slm-1b_mmlu/boxplot_baseline_vs_Ntot_cpu_gpu.png (serie GPU)
+  - figures/statistical_reports/slm-1b_mmlu/ecdf_cpu_vs_gpu_latency.png (pannelli GPU | 4 metriche)
+  - figures/statistical_reports/slm-1b_mmlu/exceedance_1_minus_cdf_cpu_gpu.png (pannelli GPU | 4 metriche)
+  - figures/statistical_reports/slm-1b_mmlu/doe_importance_ss_pct_ttft_ms.png (pannello GPU)
+  - figures/statistical_reports/slm-1b_mmlu/doe_importance_ss_pct_per_token_lat_ms.png (pannello GPU)
+  - figures/statistical_reports/slm-1b_mmlu/doe_importance_ss_pct_throughput_tok_s.png (pannello GPU)
+  - figures/statistical_reports/slm-1b_mmlu/doe_importance_ss_pct_jitter_ms.png (pannello GPU)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_ttft_ms.png
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_per_token_lat_ms.png
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_throughput_tok_s.png
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_jitter_ms.png
+
+2.2 Conclusioni generali e diagnostica complessiva GPU:
+  1) Impatto sistematico "a gradino" su TTFT in tutte le 40 celle stressor:
+     In [heatmap_degradation_cpu_vs_gpu.png] (GPU | TTFT) e
+     [boxplot_baseline_vs_Ntot_cpu_gpu.png], tutte e 40 le celle aumentano rispetto alla
+     baseline (MWU Holm p = 2.71e-06, Welch p <= 2.1e-16, Cliff's delta = +1.0000, A12 = 1.0000,
+     effect_size = large): da 25.56 ms a 27.80 - 28.15 ms (+8.76% .. +10.13%), visibile nello
+     shift verso destra in [ecdf_cpu_vs_gpu_latency.png] (GPU | ECDF TTFT).
+  2) Isolamento del decode (TPOT, Throughput e Jitter):
+     In [heatmap_degradation_cpu_vs_gpu.png] (GPU | TPOT, Throughput, Jitter) le variazioni
+     medie di TPOT restano tra -0.33% e +0.63% (salvo il singolo outlier in io N75/S50 a +1.26%)
+     e il Throughput tra 117.49 e 118.76 tok/s (-0.80% .. +0.27%).
+  3) Riepilogo Diagnostica Residui e Scelta ANOVA vs Kruskal-Wallis (24 modelli OLS GPU):
+     - Sui 24 modelli DoE GPU (6 stressor x 4 metriche):
+       * 15/24 modelli soddisfano SIA Shapiro-Wilk sui residui (p >= 0.05) SIA Levene (p >= 0.05)
+         -> analizzati con **ANOVA F-test** (One-Way Type II o Two-Way Type III).
+       * 9/24 modelli violano almeno un'assunzione (es. IO per singolo outlier estremo z~15,
+         MEM TTFT/Jitter, OS Jitter, INTERRUPT TTFT per code pesanti, CACHE Jitter per Levene
+         p = 0.0457) -> la pipeline passa automaticamente a **Kruskal-Wallis** sui ranghi.
+     - In [doe_importance_ss_pct_*.png] (pannelli GPU) l'errore sperimentale residuo domina
+       perche' lo stacco principale avviene gia' a N25; le quote spiegate maggiori riguardano
+       MEM Jitter (24.31% N), INTERRUPT TTFT (16.67% N), OS Jitter/TPOT (14.69%/11.92% N) e
+       MEM Throughput/TPOT (8.72%/8.00% N + 2.86%/2.23% S).
+  4) SLO Attainment, Exceedance e i.i.d. globale:
+     - In [exceedance_1_minus_cdf_cpu_gpu.png] (GPU), solo MEM e IO estendono la coda p99 su
+       TPOT, e INTERRUPT/MEM/IO su TTFT. Lo SLO attainment resta tra 99.17%-100.00% (1.5x) e
+       99.67%-100.00% (2.0x), con zero differenze significative al Fisher's Exact Test.
+     - Su 82 serie GPU in 5_stationarity_and_iid_tests.csv: 82/82 (100%) superano KS tra meta',
+       78/82 (95.1%) Ljung-Box (4 casi isolati lag1 p = 0.011..0.036 su cache N50, cpu N25,
+       io N100/S25, mem N25/S75) e 79/82 (96.3%) KPSS (3 casi marginali p = 0.028..0.047 su
+       cache N50, interrupt N100, mem N75/S50). Zero throttling termico ovunque.
+
+
+================================================================================
+SEZIONE 3: ANALISI DETTAGLIATA DELLE 6 FAMIGLIE DI STRESSOR SU GPU (rep 1..20)
+================================================================================
+
+--------------------------------------------------------------------------------
+3.1 STRESSOR MEM (vm + stream + mem_rate | Piano 3D N x S | 12 celle, 240 run, 7.200 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_mem/degradation_slm-1b_gpu_mmlu_mem_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_mem_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli MEM)
+  - figures/statistical_reports/slm-1b_mmlu/{heatmap_degradation_cpu_vs_gpu,doe_importance_ss_pct_*,exceedance_1_minus_cdf_cpu_gpu}.png
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS Two-Way Factorial ANOVA con interazione (N * S) e Somma dei Quadrati Type III**
+    (scelto Type III per stimare ortogonalmente gli effetti principali N, S e l'interazione N:S).
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * per_token_lat_ms : Residui perfettamente allineati sulla diagonale Q-Q
+                         (Shapiro-Wilk W = 0.9947, p = 0.5718 -> Normal = True), varianza
+                         uniforme tra le 12 celle (Levene F = 1.1075, p = 0.3561 -> Homo = True),
+                         nessun pattern in Residui vs Fitted -> **ANOVA Type III pienamente valida**.
+    * throughput_tok_s : Q-Q lineare (Shapiro W = 0.9930, p = 0.3155 -> Normal = True; Levene
+                         F = 1.1540, p = 0.3206 -> Homo = True) -> **ANOVA Type III pienamente valida**.
+    * ttft_ms          : Omoschedastico (Levene F = 0.7703, p = 0.6696 -> True), ma leggera coda
+                         superiore nei Q-Q oltre z > +2 (Shapiro W = 0.9324, p = 4.80e-09 -> False)
+                         -> **Kruskal-Wallis** sui fattori principali N e S.
+    * jitter_ms        : Violazione di entrambe le assunzioni in [residuals_diagnostics_gpu_jitter_ms.png],
+                         con dispersione diversa tra N25-N50 e N75-N100 e punti > +3 sigma
+                         (Shapiro W = 0.8580, p = 4.36e-14; Levene F = 5.0847, p = 4.16e-07)
+                         -> **Kruskal-Wallis** sui fattori principali N e S.
+
+Risultati statistici:
+  - Effetti DoE (SS/SST %) e Post-Hoc (tabelle 2 e 6):
+    * ttft_ms          : R^2 = 0.1705; N sig. (Kruskal p = 3.23e-05, imp = 4.62%), S non sig.
+                         (p = 0.3695, 1.74%), N:S diagnostica p = 0.0505 (4.98%).
+    * per_token_lat_ms : R^2 = 0.2837; N sig. (ANOVA Type III F = 6.92, p = 1.78e-04, imp = 8.00%),
+                         S marginale non sig. (p = 0.0576, 2.23%), N:S non sig. (p = 0.5609, 1.88%).
+                         Post-hoc Tukey/MWU-Holm: salto da N25 a N50/N75/N100 (p < 1e-4).
+    * throughput_tok_s : R^2 = 0.2726; N sig. (ANOVA Type III F = 7.68, p = 6.55e-05, imp = 8.72%)
+                         e **S sig. (F = 3.77, p = 0.0244, imp = 2.86%)**, N:S non sig. (p = 0.4832).
+    * jitter_ms        : R^2 = 0.5654; N fortemente sig. (Kruskal p = 9.93e-25, imp = 24.31%),
+                         S non sig. (p = 0.6307); post-hoc N25/N50 != N75/N100 (p < 1e-12).
+  - Baseline vs Stressor (tabella 3, MWU-Holm, Welch e Effect Size):
+    12/12 celle significative su TUTTE E 4 le metriche (MWU Holm p <= 9.29e-03, Welch
+    p <= 8.64e-03, Cliff's delta = large su tutte): TTFT +9.49%..+10.13% (p99 fino a 41.62 ms),
+    TPOT +0.36%..+0.63% (p99 fino a 11.05 ms in [exceedance_1_minus_cdf_cpu_gpu.png]),
+    Throughput -0.27%..-0.50%, Jitter +0.75%..+3.46%.
+  - Bottleneck & Spearman (tabella 4): [slm-1b_gpu_mmlu_mem_bottleneck.png] mostra nel pannello
+    `Parametri Memoria` RAM libera stabile (~6e7 KB, zero swap), nel pannello `Parametri CPU`
+    un leggero aumento `us` (1.8%) correlato con TPOT (rho = +0.3242, p = 2.8e-07), e nel
+    pannello `Parametri Termici` temperatura ~51.4-52.7 C.
+
+Conclusioni su MEM:
+  Unico stressor con impatto statisticamente significativo su 12/12 celle e tutte e 4 le
+  metriche per contesa sulla banda della memoria unificata (UMA/LPDDR5) condivisa con GPU.
+
+
+--------------------------------------------------------------------------------
+3.2 STRESSOR IO (iomix + hdd | Piano 3D N x S | 12 celle, 240 run, 7.200 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_io/degradation_slm-1b_gpu_mmlu_io_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_io_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli IO)
+  - figures/statistical_reports/slm-1b_mmlu/{heatmap_degradation_cpu_vs_gpu,doe_importance_ss_pct_*,exceedance_1_minus_cdf_cpu_gpu}.png
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS Two-Way Factorial ANOVA con interazione (N * S) e Somma dei Quadrati Type III**.
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * In tutte e 4 le metriche la varianza tra celle e' omoschedastica (Levene F = 0.94..1.02,
+      p = 0.428..0.503 -> Homo = True), MA la normalita' dei residui e' fortemente violata
+      (Shapiro-Wilk: ttft W = 0.5973 p = 2.54e-23; tpot W = 0.1329 p = 1.01e-31;
+      tps W = 0.1608 p = 2.46e-31; jitter W = 0.1568 p = 2.16e-31).
+    * PERCHE' SUCCEDE (visibile nei Q-Q Plot e Residui vs Fitted di IO): un singolo run
+      outlier nella cella 75% N_tot, 50% S_tot (rep19: ttft=30.00 ms, tpot=10.31 ms,
+      tps=103.41 tok/s, jitter=2.64 ms) genera un residuo isolato a circa +-12..15 sigma
+      mentre gli altri 239 punti restano schiacciati sullo zero.
+    * EFFETTO CRUCIALE DELLA SCELTA DEL TEST: quel singolo outlier gonfia l'errore quadratico
+      OLS al ~94% (F_ANOVA su TPOT = 0.17, p = 0.917 -> falso negativo!), mentre il test non
+      parametrico **Kruskal-Wallis** sui ranghi rivela immediatamente l'effetto monotono reale
+      di N (**H = 131.82, p = 2.20e-28**)!
+
+Risultati statistici:
+  - Effetti DoE e Post-Hoc: Kruskal-Wallis significativo per N su tutte le 4 metriche (ttft
+    p = 7.40e-07, tpot p = 2.20e-28, tps p = 1.16e-23, jitter p = 9.23e-34); S (p = 0.18..0.71)
+    e N:S (p = 0.087..0.501) non significativi. Post-hoc MWU-Holm significativo tra quasi tutte
+    le coppie di N su TPOT, TPS e Jitter.
+  - Baseline vs Stressor (tabella 3): 12/12 sig. TTFT (+9.26%..+10.00%, p_holm = 2.71e-06),
+    7/12 TPOT (-0.03%..+1.26%), 9/12 TPS (-0.80%..-0.00%), 9/12 Jitter (-0.78%..+3.42%),
+    coerente anche con Welch (12/12, 8/12, 8/12, 9/12). L'outlier N75/S50 produce l'unico
+    SLO strict TPOT a 99.17% (Fisher p_holm = 1.0000, non sig.).
+  - Bottleneck & Spearman (tabella 4): [slm-1b_gpu_mmlu_io_bottleneck.png] evidenzia nel pannello
+    `Parametri I/O` `bo` fino a >50.000 blk/s (con piccolo picco `bi` a N75) e nel pannello
+    `Parametri Sistema` `cs` >3.000/s e `in` ~2.600/s, spiegando le correlazioni piu' alte su GPU
+    (jitter vs id rho=-0.7950, sy=+0.7940, bo=+0.7909, cs=+0.7575; TPOT vs bo=+0.7454).
+
+Conclusioni su IO:
+  Secondo stressor per criticita' su GPU: neutro a N25, ma oltre N50 il traffico a blocchi
+  induce un lieve degrado monotono e rari picchi di coda (curva viola N_tot con p99 = 9.90 ms in
+  [exceedance_1_minus_cdf_cpu_gpu.png]; picco p99 di cella a 12.84 ms in N75/S50 per rep19).
+
+
+--------------------------------------------------------------------------------
+3.3 STRESSOR INTERRUPT (timer + sigq | Piano 2D N | 4 celle, 80 run, 2.400 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_interrupt/degradation_slm-1b_gpu_mmlu_interrupt_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_interrupt_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli INTERRUPT)
+  - figures/statistical_reports/slm-1b_mmlu/{doe_importance_ss_pct_ttft_ms,exceedance_1_minus_cdf_cpu_gpu}.png
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS One-Way ANOVA (fattore N) con Somma dei Quadrati Type II**.
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * per_token_lat_ms, throughput_tok_s, jitter_ms : Residui perfettamente sulla retta Q-Q
+      (Shapiro W = 0.9897 p = 0.7762 | W = 0.9889 p = 0.7219 | W = 0.9772 p = 0.1624) e
+      omoschedastici (Levene p = 0.3548 | 0.3515 | 0.7923) -> **ANOVA One-Way Type II valida**.
+    * ttft_ms : Violazione sia di normalita' (curva a S/code in Q-Q: Shapiro W = 0.9127,
+      p = 4.35e-05 -> False) sia di omoschedasticita' (dispersione maggiore a N50/N75:
+      Levene F = 2.8647, p = 0.0422 -> False) -> commuta su **Kruskal-Wallis**.
+
+Risultati statistici:
+  - Effetti DoE e Post-Hoc: TTFT Kruskal-Wallis sig. (H = 10.86, p = 1.25e-02, imp = 16.67%
+    in [doe_importance_ss_pct_ttft_ms.png]), con picco a N50 (post-hoc Tukey/MWU-Holm N25 vs N50
+    e N50 vs N100 sig.). TPOT, TPS e Jitter hanno ANOVA Type II non sig. (p = 0.131 / 0.129 / 0.132).
+  - Baseline vs Stressor: 4/4 TTFT sig. (+8.86%..+9.45%, p99 = 42.17 ms a N50 visibile nella
+    coda rossa di [exceedance_1_minus_cdf_cpu_gpu.png]); nessuna degradazione su TPOT/Throughput.
+  - Bottleneck: [slm-1b_gpu_mmlu_interrupt_bottleneck.png] mostra nel pannello `Parametri Sistema`
+    una rampa lineare di `in` fino a >205.000/s; escursione termica minima nel pannello `Parametri Termici`.
+
+Conclusioni su INTERRUPT:
+  Il decode GPU e' isolato da >200.000 interrupt/s; l'unico impatto significativo colpisce il
+  TTFT (+8.9%..+9.5% medio e picco p99 a 42.17 ms).
+
+
+--------------------------------------------------------------------------------
+3.4 STRESSOR OS (sched + fork + switch | Piano 2D N | 4 celle, 80 run, 2.400 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_os/degradation_slm-1b_gpu_mmlu_os_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_os_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli OS)
+  - figures/statistical_reports/slm-1b_mmlu/{doe_importance_ss_pct_per_token_lat_ms,doe_importance_ss_pct_jitter_ms}.png
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS One-Way ANOVA (fattore N) con Somma dei Quadrati Type II**.
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * ttft_ms, per_token_lat_ms, throughput_tok_s : Residui normali in Q-Q (Shapiro W = 0.9919
+      p = 0.9026 | W = 0.9720 p = 0.0765 | W = 0.9735 p = 0.0955) e omoschedastici (Levene
+      p = 0.1136 | 0.1078 | 0.1662) -> **ANOVA One-Way Type II pienamente valida**.
+    * jitter_ms : Violazione di normalita' (outlier z~+3 in Fitted e curva Q-Q: Shapiro
+      W = 0.9209, p = 1.05e-04) e omoschedasticita' (Levene F = 5.4700, p = 1.86e-03) ->
+      commuta su **Kruskal-Wallis**.
+
+Risultati statistici:
+  - Effetti DoE e Post-Hoc: TTFT ANOVA Type II non sig. (p = 0.3447, imp = 4.25%). TPOT e TPS
+    ANOVA Type II sig. (p = 0.0212 / 0.0388, imp = 11.92% / 10.37%), Jitter Kruskal-Wallis sig.
+    (p = 0.0212, imp = 14.69%), ma lo scarto massimo tra livelli (N25 vs N75) e' appena 0.0106
+    ms/tok (~10 microsecondi) su TPOT e < 0.007 ms su Jitter.
+  - Baseline vs Stressor: 4/4 TTFT sig. (+9.16%..+9.34%); **0/4 TPOT sig.** (MWU Holm p >= 0.11,
+    delta -0.04%..+0.09%); 1/4 TPS (N75 -0.11%); 3/4 Jitter (-0.77%..-0.33%).
+  - Bottleneck: [slm-1b_gpu_mmlu_os_bottleneck.png] evidenzia `cs` fino a >105.000/s nel pannello `Parametri Sistema`.
+
+Conclusioni su OS:
+  Nonostante >105.000 context switch/s, OS non degrada il TPOT rispetto alla baseline (0/4
+  celle sig.) e aggiunge solo l'offset fisso sul TTFT (+9.2%).
+
+
+--------------------------------------------------------------------------------
+3.5 STRESSOR CPU (cpu + matrix + fft | Piano 2D N | 4 celle, 80 run, 2.400 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_cpu/degradation_slm-1b_gpu_mmlu_cpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_cpu_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli CPU)
+  - figures/statistical_reports/slm-1b_mmlu/heatmap_degradation_cpu_vs_gpu.png (riga GPU / cpu)
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS One-Way ANOVA (fattore N) con Somma dei Quadrati Type II**.
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * **Tutte e 4 le metriche** superano sia Shapiro-Wilk (ttft W = 0.9720 p = 0.0757;
+      tpot W = 0.9824 p = 0.3373; tps W = 0.9819 p = 0.3159; jitter W = 0.9733 p = 0.0927) sia
+      Levene (p = 0.1290 | 0.2101 | 0.1953 | 0.7211) -> **ANOVA One-Way Type II valida su tutto**.
+
+Risultati statistici:
+  - Effetti DoE e Post-Hoc: ANOVA Type II totalmente NON significativa per N su tutte le metriche
+    (p = 0.3476 / 0.9486 / 0.9480 / 0.7570; imp <= 4.22%), 0/24 coppie post-hoc significative.
+  - Baseline vs Stressor: 4/4 TTFT sig. (+8.76%..+8.94%); nessuna degradazione reale su decode
+    (lo scarto -0.33% sulla media TPOT deriva solo dal task_index=12 descritto in Sez. 1.3;
+    sulla mediana task CPU e' 8.3963 ms vs 8.3893 ms Baseline); 4/4 Jitter sig. (+1.90%..+1.94%,
+    +0.03 ms, Cliff's delta = +1.0000).
+  - Bottleneck: [slm-1b_gpu_mmlu_cpu_bottleneck.png] mostra pannelli `Parametri CPU` (`id` ~98.9%) e `Parametri Sistema` stabili su N.
+
+Conclusioni su CPU:
+  Totale invarianza rispetto a N e assenza di degradazione sul decode GPU; restano solo +8.8%
+  su TTFT e +1.9% costante su Jitter.
+
+
+--------------------------------------------------------------------------------
+3.6 STRESSOR CACHE (cache + l1-cache + llc-affinity | Piano 2D N | 4 celle, 80 run, 2.400 task)
+--------------------------------------------------------------------------------
+Immagini utilizzate:
+  - figures/llm_metrics/slm-1b_gpu_mmlu_cache/degradation_slm-1b_gpu_mmlu_cache_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png
+  - figures/hardware_bottlenecks/slm-1b_gpu_mmlu/slm-1b_gpu_mmlu_cache_bottleneck.png (griglia 2x3: Parametri CPU, Memoria, I/O, Processi, Sistema, Termici)
+  - figures/statistical_reports/slm-1b_mmlu/residuals_diagnostics_gpu_{ttft_ms,per_token_lat_ms,throughput_tok_s,jitter_ms}.png (pannelli CACHE)
+  - figures/statistical_reports/slm-1b_mmlu/heatmap_degradation_cpu_vs_gpu.png (riga GPU / cache)
+
+Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
+  - Modello stimato: **OLS One-Way ANOVA (fattore N) con Somma dei Quadrati Type II**.
+  - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
+    * ttft_ms, per_token_lat_ms, throughput_tok_s : Residui normali in Q-Q (Shapiro W = 0.9727
+      p = 0.0840 | W = 0.9757 p = 0.1318 | W = 0.9752 p = 0.1218) e omoschedastici (Levene
+      p = 0.6490 | 0.2446 | 0.2447) -> **ANOVA One-Way Type II valida**.
+    * jitter_ms : Residui normali (Shapiro W = 0.9829, p = 0.3645), ma leggera
+      eteroschedasticita' tra livelli (Levene F = 2.7988, p = 0.0457 < 0.05) -> commuta su
+      **Kruskal-Wallis**.
+
+Risultati statistici:
+  - Effetti DoE e Post-Hoc: fattore N NON significativo su tutte le 4 metriche (p = 0.8777 /
+    0.4032 / 0.4282 / Kruskal 0.1961; imp <= 4.41%), 0/24 coppie post-hoc significative.
+  - Baseline vs Stressor: 4/4 TTFT sig. (+8.81%..+8.88%); nessun degrado su decode/jitter.
+  - Correlazioni & Bottleneck: debole Spearman `cs` vs TPOT (+0.2763, p = 0.0131); tutti i 6 pannelli
+    in [slm-1b_gpu_mmlu_cache_bottleneck.png] risultano quasi sovrapponibili alla baseline.
+
+Conclusioni su CACHE:
+  Stressor piu' innocuo su GPU: nessun degrado su decode e nessuna dipendenza da N, con il solo
+  gradino iniziale su TTFT (+8.8%).
+
+
+================================================================================
+SEZIONE 4: SINTESI FINALE SU GPU (SLM-1B MMLU, rep 1..20)
+================================================================================
+
+1. Graduatoria di criticita' degli stressor su GPU (dalla piu' incisiva alla piu' blanda):
+   1) MEM       : unico stressor che degrada sistematicamente tutte e 4 le metriche in 12/12
+                  celle (TTFT +9.5..+10.1%, TPOT +0.36..+0.63% con p99 fino a 11.05 ms,
+                  Throughput -0.27..-0.50%, Jitter +0.75..+3.46%), per contesa sulla memoria
+                  unificata (UMA/LPDDR5).
+   2) IO        : degrada monotonamente TPOT/Throughput/Jitter oltre N50 (+0.25..+0.29% a N100,
+                  rilevato grazie a Kruskal-Wallis nonostante l'outlier z~15), ha le
+                  correlazioni vmstat piu' forti (|rho| fino a 0.795) e p99 TPOT a 12.84 ms.
+   3) INTERRUPT : non degrada il TPOT medio, ma genera il p99 TTFT piu' elevato (42.17 ms a N50)
+                  e l'unico effetto DoE rilevante di N su TTFT (16.67%) sotto >200.000 irq/s.
+   4) OS        : oltre 105.000 cs/s, ma 0/4 celle significative su TPOT vs baseline.
+   5) CPU       : decode immune e invarianza rispetto a N; solo +1.9% sul Jitter medio.
+   6) CACHE     : stressor piu' innocuo su GPU (nessun degrado decode, nessuna dipendenza da N).
+
+2. Conclusione complessiva per GPU SLM-1B MMLU:
+   Con offload completo su GPU (-ngl 99) su tutte le 20 ripetizioni (rep 1..20, 820 run /
+   24.600 task), il decode autoregressive mostra elevata robustezza real-time (SLO strict
+   1.5x p95 rispettato nel 99.17%-100.00% dei task e zero throttling termico). Le uniche
+   vulnerabilita' statisticamente documentate sono lo spostamento a gradino del TTFT
+   (+8.76%..+10.13%, ~+2.2..+2.6 ms) sotto qualunque stressor attivo e il lieve allungamento
+   del decode e della coda p99 indotto esclusivamente da contesa di memoria (MEM) e I/O (IO).
+================================================================================
