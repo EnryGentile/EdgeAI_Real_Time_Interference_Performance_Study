@@ -1,0 +1,98 @@
+task_index,sample_id,exp_id,model_id,device,benchmark,stressor_class,stressor_method,num_workers,size,duration,repetition,prompt_tokens,output_tokens,ttft_ms,prompt_ms_per_tok,per_token_lat_ms,throughput_tok_s,jitter_ms,task_duration_s,ground_truth,model_response,vmstat_r,vmstat_b,vmstat_swpd_kb,vmstat_free_kb,vmstat_buff_kb,vmstat_cache_kb,vmstat_si,vmstat_so,vmstat_bi,vmstat_bo,vmstat_in,vmstat_cs,vmstat_us,vmstat_sy,vmstat_id,vmstat_wa,vmstat_st,vmstat_cpu_temp_c,vmstat_gpu_temp_c,vmstat_throttled
+1,1,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,91,1,907.3387,10.02,1666.6667,0.6,0.0,3.3879,B,D,20.25,0.25,44544.0,53653452.0,128128.0,1044970.0,0.0,62129.0,4800.75,25.0,3124.5,5534.5,54.75,13.75,31.25,0.0,0.0,52.8725,49.0,0.0
+2,2,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,73,55,295.1789,4.0535,90.9091,11.0,36.9428,6.0314,C,"To find the index of <p> in S_5, we need to find the order of <p>. 
+
+First, let's simplify p:
+
+p = (1, 2, 5, 4)(2, 3)
+= (1, 2, 5, 4)(2",7.0,0.0,512.0,56065934.6667,128174.0,1046720.6667,0.0,14416.6667,0.0,52.6667,5427.5,5762.5,81.1667,1.5,18.0,0.0,0.0,54.3617,49.985,0.0
+3,3,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,79,60,261.7068,3.3036,90.0901,11.1,19.8694,5.9263,D,"To find the zeros of the polynomial x^5 + 3x^3 + x^2 + 2x in Z_5, we need to find the values of x in Z_5 that make the polynomial equal to 0.
+
+First, we can simplify the polynomial by noting that x^5 =",3.5,0.0,512.0,56051858.0,128236.0,1046762.6667,0.0,0.0,0.0,21.3333,4977.1667,4370.5,91.0,0.5,8.0,0.0,0.0,55.36,50.3183,0.0
+4,4,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,91,60,318.4186,3.5137,90.0901,11.1,16.3335,5.9769,B,"C
+
+Explanation: 
+Statement 1 is true. If a group G is non-Abelian, then any factor group G/N (where N is a normal subgroup of G) will also be non-Abelian, because the operation is defined as (aN)(bN) = (a(bN))N",5.3333,0.0,512.0,56032818.0,128288.0,1046782.6667,0.0,0.0,0.0,28.0,4862.6667,4103.1667,87.1667,0.5,12.1667,0.0,0.0,55.635,50.7867,0.0
+5,5,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,104,59,331.4244,3.1857,90.0901,11.1,25.762,5.985,B,"To find the product of the given polynomials in the polynomial ring Z_8[x], we need to multiply them as we would in a regular polynomial multiplication, but we need to perform the operations modulo 8.
+
+f(x) = 4x - 5
+g(x) = 2x^2 -",4.6667,0.0,512.0,56012582.0,128338.6667,1046801.3333,0.0,0.0,0.0,30.6667,4793.3333,3902.6667,87.0,0.6667,12.5,0.0,0.0,55.5617,51.2983,0.0
+6,6,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,99,5,320.3232,3.2321,94.3396,10.6,8.6803,0.7945,A,"C. True, False",1.0,0.0,512.0,55987964.0,128368.0,1046808.0,0.0,0.0,0.0,24.0,6020.0,7040.0,45.0,1.0,54.0,0.0,0.0,55.96,51.09,0.0
+7,7,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,88,1,262.9127,2.9958,89.2857,11.2,0.0,0.3525,A,A,1.0,0.0,512.0,55987964.0,128368.0,1046808.0,0.0,0.0,0.0,24.0,6020.0,7040.0,45.0,1.0,54.0,0.0,0.0,55.96,51.09,0.0
+8,8,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,70,59,253.403,3.601,90.0901,11.1,20.1758,5.934,D,"A
+
+Explanation: 
+Statement 1 is true. A ring homomorphism is one-to-one if and only if its kernel is {0}. This is a fundamental property of ring homomorphisms.
+
+Statement 2 is false. Q being an ideal in R does not necessarily mean that Q is the kernel of",4.1667,0.0,512.0,55956184.0,128406.6667,1046808.6667,0.0,0.0,0.0,27.3333,5146.5,4660.5,92.0,0.5,7.6667,0.0,0.0,56.1967,51.1417,0.0
+9,9,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,57,59,295.3349,5.2029,89.2857,11.2,20.0515,5.9354,B,"B
+
+Explanation: The field extension Q(sqrt(2) + sqrt(3)) over Q is a degree 4 extension. This is because the minimal polynomial of sqrt(2) + sqrt(3) over Q is x^4 - 10x^2 + 1, which is irreducible over Q",6.5,0.0,512.0,55935326.0,128460.0,1046815.3333,0.0,0.0,0.0,22.0,4643.0,3741.3333,87.6667,0.3333,11.8333,0.0,0.0,56.4317,51.48,0.0
+10,10,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,50,56,287.6903,5.7504,90.9091,11.0,30.4476,6.0151,C,"To find the zeros of the polynomial x^3 + 2x + 2 in Z_7, we need to check each element of Z_7 to see if it is a zero of the polynomial.
+
+Z_7 = {0, 1, 2, 3, 4, 5",8.5,0.0,512.0,55938554.0,128508.0,1046839.3333,0.0,0.0,0.0,20.6667,5380.8333,5383.8333,87.1667,0.8333,12.0,0.0,0.0,56.3033,51.955,0.0
+11,11,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,91,1,321.7037,3.5311,90.0901,11.1,0.0,0.4118,C,A,0.0,0.0,512.0,55938464.0,128536.0,1046856.0,0.0,0.0,0.0,16.0,5257.0,5737.0,79.0,0.0,20.0,0.0,0.0,54.92,51.56,0.0
+12,12,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,72,1,264.3111,3.6576,109.8901,9.1,0.0,0.375,C,D,2.0,0.0,512.0,55930292.0,128544.0,1046848.0,0.0,0.0,0.0,28.0,2888.0,2995.0,11.0,1.0,88.0,0.0,0.0,54.4,51.22,0.0
+13,13,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,58,58,237.4583,4.1051,89.2857,11.2,27.8078,5.8818,A,"Question: Find the order of the factor group (Z_11 x Z_15)///(<1, 1>) Options: A. 1 B. 2 C. 5 D. 11 Answer with only the letter corresponding to the correct answer:
+To find the order of the factor group (Z_11 x Z_15)/(<1, 1>), we need to find the order of the subgroup <1, 1> in Z_11 x Z_15 first.
+
+The subgroup <1, 1> is generated by the element (1",8.3333,0.0,512.0,55902718.6667,128572.0,1046852.0,0.0,0.0,0.0,24.0,4845.3333,4313.3333,84.6667,0.6667,14.8333,0.0,0.0,56.535,51.95,0.0
+14,14,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,129,60,344.2871,2.6645,90.0901,11.1,20.2398,6.0214,C,"To factor the polynomial x^3 + 2x^2 + 2x + 1 in Z_7[x], we can use the method of polynomial long division or synthetic division. However, since we are working in Z_7[x], we can also try to find a pattern or use the fact that",8.5,0.0,512.0,55885625.3333,128628.0,1046865.3333,0.0,0.0,0.0,21.3333,4864.3333,4129.3333,92.6667,0.8333,6.8333,0.0,0.0,57.1367,52.1817,0.0
+15,15,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,53,59,287.3062,5.4289,90.0901,11.1,25.6541,5.9508,C,"To find the maximum possible order for an element of S_n, we need to find the maximum possible number of cycles of length 1, 2, 3, etc.
+
+For n = 10, the maximum possible order is achieved when we have as many cycles of length 2 as possible, and the remaining",8.3333,0.0,512.0,55854720.0,128676.0,1046869.3333,0.0,0.0,0.0,20.6667,5024.5,4675.1667,87.6667,0.6667,12.0,0.0,0.0,57.245,52.3233,0.0
+16,16,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,65,61,278.185,4.3085,90.0901,11.1,19.7627,5.9379,B,"To determine the correct answer, let's analyze each statement:
+
+Statement 1: R is a splitting field of some polynomial over Q. 
+- A splitting field of a polynomial over a field is the smallest field extension in which the polynomial splits into linear factors. 
+- R is the field of real numbers, which is",6.3333,0.0,512.0,55848685.3333,128724.0,1046870.0,0.0,0.0,0.0,23.3333,4892.0,4411.8333,87.6667,0.6667,11.5,0.0,0.0,57.0583,52.765,0.0
+17,17,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,58,1,266.4845,4.5956,89.2857,11.2,0.0,0.3558,C,D,0.0,0.0,512.0,55848420.0,128752.0,1046876.0,0.0,0.0,0.0,20.0,3569.0,2654.0,70.0,0.0,30.0,0.0,0.0,55.37,52.22,0.0
+18,18,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,73,62,253.6578,3.4722,90.0901,11.1,12.0564,5.9105,C,"To compute the product in the given ring, we need to follow the rules of component-wise multiplication in the direct product of rings.
+
+In Z_5 x Z_9, we have:
+
+(2,3)(3,5) = ((2*3) mod 5, (3*5) mod",6.6667,0.0,512.0,55816262.0,128778.6667,1046872.0,0.0,0.0,0.0,16.0,4846.8333,4355.1667,82.8333,0.8333,16.6667,0.0,0.0,57.0783,52.75,0.0
+19,19,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,62,1,296.1931,4.7551,89.2857,11.2,0.0,0.3859,D,D,0.0,0.0,512.0,55812124.0,128800.0,1046876.0,0.0,0.0,0.0,16.0,3775.0,2861.0,73.0,0.0,26.0,0.0,0.0,55.56,52.5,0.0
+20,20,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,103,1,275.4865,2.6788,89.2857,11.2,0.0,0.3655,A,A,0.0,0.0,512.0,55779168.0,128808.0,1046880.0,0.0,0.0,0.0,20.0,3151.0,3338.0,10.0,1.0,89.0,0.0,0.0,55.27,54.5,0.0
+21,21,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,100,60,266.167,2.6681,90.9091,11.0,16.3886,6.0016,A,"A
+
+Explanation: 
+Statement 1 is true. The internal direct product of two groups G and H is defined as the set G + H = {(g, h) | g ∈ G, h ∈ H} with the operation (g1, h1) * (g2, h2) = (",2.8333,0.0,512.0,55762798.0,128836.0,1046883.3333,0.0,0.0,0.0,28.6667,5427.3333,5529.0,85.0,0.8333,14.1667,0.0,0.0,57.4733,52.5467,0.0
+22,22,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,104,57,331.4893,3.1857,90.9091,11.0,30.4631,6.0545,A,"To find the sum of the given polynomials in Z_8[x], we need to add the coefficients of the same degree terms.
+
+f(x) = 4x - 5
+g(x) = 2x^2 - 4x + 2
+
+First, we add the constant terms:
+-",5.5,0.0,512.0,55738002.6667,128892.0,1046884.0,0.0,0.0,0.0,24.0,5486.6667,5398.1667,92.1667,0.6667,7.0,0.0,0.0,57.7767,52.7617,0.0
+23,23,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,93,57,322.0637,3.4795,90.0901,11.1,26.2821,6.0148,D,"C
+
+Explanation: 
+Statement 1 is false because any set of two vectors in R^2 can be linearly dependent. For example, the vectors (1, 0) and (1, 0) are linearly dependent.
+
+Statement 2 is true. If {v1, ... , vk}",6.5,0.0,512.0,55714343.3333,128940.0,1046890.6667,0.0,0.0,0.0,21.3333,4873.3333,4356.1667,86.8333,0.6667,12.5,0.0,0.0,57.8383,52.8983,0.0
+24,24,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,56,1,302.6752,5.3967,89.2857,11.2,0.0,0.3922,D,"Question: The set of all nth roots of unity under multiplication of complex numbers form a///an Options: A. semi group with identity B. commutative semigroups with identity C. group D. abelian group Answer with only the letter corresponding to the correct answer:
+C",1.0,0.0,512.0,55685612.0,128968.0,1046896.0,0.0,0.0,0.0,16.0,4078.0,4407.0,49.0,0.0,50.0,0.0,0.0,55.87,54.12,0.0
+25,25,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,76,60,252.0808,3.3212,91.7431,10.9,16.9922,6.0185,B,"Question: Statement 1 | Every maximal ideal is a prime ideal. Statement 2 | If I is a maximal ideal of a commutative ring R, then R///I is field. Options: A. True, True B. False, False C. True, False D. False, True Answer with only the letter corresponding to the correct answer:
+A
+
+Explanation: 
+Statement 1 is true. Every maximal ideal is indeed a prime ideal because if a product of two elements is in a maximal ideal, then at least one of the elements must be in the maximal ideal, since the maximal ideal is a proper ideal and the product of two elements is not zero.",8.3333,0.0,512.0,55685126.6667,128996.0,1046894.6667,0.0,0.0,0.0,24.0,5986.8333,6651.8333,84.6667,0.6667,14.6667,0.0,0.0,57.86,53.0167,0.0
+26,26,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,72,1,306.8055,4.2735,89.2857,11.2,0.0,0.3962,C,"Question: Let G denoted the set of all n x n non-singular matrices with rational numbers as entries. Then under multiplication G is a///an Options: A. subgroup B. finite abelian group C. infinite, non abelian group D. ininite, abelian Answer with only the letter corresponding to the correct answer:
+D",1.0,0.0,512.0,55685136.0,129024.0,1046892.0,0.0,0.0,0.0,16.0,3463.0,2605.0,68.0,0.0,32.0,0.0,0.0,56.14,52.59,0.0
+27,27,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,78,55,253.2276,3.2279,90.0901,11.1,34.4368,5.9438,C,"A statement about groups of order 42 can be analyzed using the Sylow theorems. 
+
+A group of order 42 can be expressed as 2 * 3 * 7. 
+
+For a group of order 42, the number of Sylow 7-subgroups must be congruent to",8.5,0.0,512.0,55675959.3333,129052.0,1046898.6667,0.0,0.0,0.0,19.3333,4710.5,4095.6667,82.5,0.6667,17.0,0.0,0.0,57.7,53.3033,0.0
+28,28,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,90,60,318.7176,3.5549,90.0901,11.1,20.6245,6.0077,B,"To determine whether the polynomial satisfies the Eisenstein criterion, we need to find a prime number p such that p divides all the coefficients of the polynomial except the leading coefficient, and p^2 does not divide the constant term.
+
+The polynomial is 8x^3 + 6x^2 - 9x +",10.1667,0.0,512.0,55655540.6667,129108.0,1046903.3333,0.0,0.0,0.0,20.6667,5124.6667,4746.3333,90.5,0.5,9.0,0.0,0.0,58.18,53.205,0.0
+29,29,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,90,57,343.6521,3.8358,90.0901,11.1,27.9345,6.0127,D,"D. False, True
+
+Explanation: 
+
+Statement 1 is false because the image of a group under a homomorphism cannot have more elements than the group itself. The image of a group of 6 elements can have at most 6 elements.
+
+Statement 2 is true because there can be a homomorphism",4.3333,0.0,512.0,55628590.0,129156.0,1046922.0,0.0,0.0,0.0,21.3333,4857.0,4364.0,86.6667,0.6667,12.8333,0.0,0.0,58.21,53.365,0.0
+30,30,run_llm-8b_cpu_mmlu_mem_N100_t_tot_S75_rep19,LLM-8B,cpu,MMLU,mem,vm+stream+mem_rate,N_tot,75% S_tot,t_tot,19,67,1,308.9327,4.5998,89.2857,11.2,0.0,0.3985,A,A,0.0,0.0,512.0,55605400.0,129184.0,1046928.0,0.0,0.0,0.0,20.0,3177.0,2415.0,58.0,1.0,41.0,0.0,0.0,56.26,53.66,0.0

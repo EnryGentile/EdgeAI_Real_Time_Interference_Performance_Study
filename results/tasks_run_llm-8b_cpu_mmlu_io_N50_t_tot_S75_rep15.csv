@@ -1,0 +1,98 @@
+task_index,sample_id,exp_id,model_id,device,benchmark,stressor_class,stressor_method,num_workers,size,duration,repetition,prompt_tokens,output_tokens,ttft_ms,prompt_ms_per_tok,per_token_lat_ms,throughput_tok_s,jitter_ms,task_duration_s,ground_truth,model_response,vmstat_r,vmstat_b,vmstat_swpd_kb,vmstat_free_kb,vmstat_buff_kb,vmstat_cache_kb,vmstat_si,vmstat_so,vmstat_bi,vmstat_bo,vmstat_in,vmstat_cs,vmstat_us,vmstat_sy,vmstat_id,vmstat_wa,vmstat_st,vmstat_cpu_temp_c,vmstat_gpu_temp_c,vmstat_throttled
+1,1,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,91,1,503.5857,5.5279,588.2353,1.7,0.0,1.1382,B,D,4.5,1.0,0.0,56086432.0,129582.0,1096898.0,0.0,0.0,9583.0,797622.5,18855.5,24748.0,16.5,16.5,63.0,3.0,0.0,52.63,48.685,0.0
+2,2,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,73,54,255.6041,3.499,90.0901,11.1,34.306,5.9154,C,"To find the index of <p> in S_5, we need to find the order of <p>. 
+
+First, let's simplify p:
+
+p = (1, 2, 5, 4)(2, 3)
+= (1, 2, 5, 4)(2",6.5,0.0,0.0,56083914.6667,131748.0,1018792.0,0.0,0.0,0.0,26164.6667,5702.6667,5545.5,86.8333,0.8333,12.1667,0.1667,0.0,54.7483,49.8083,0.0
+3,3,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,79,61,313.7611,3.9825,90.0901,11.1,20.5323,5.9673,D,"To find the zeros of the polynomial x^5 + 3x^3 + x^2 + 2x in Z_5, we need to find the values of x in Z_5 that make the polynomial equal to 0.
+
+First, we can simplify the polynomial by noting that x^5 =",8.3333,0.0,0.0,56075306.6667,131800.0,1018890.0,0.0,0.0,14.6667,20.0,4756.5,4204.3333,87.3333,0.3333,12.1667,0.0,0.0,55.0267,50.6767,0.0
+4,4,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,91,61,317.4578,3.5014,89.2857,11.2,16.3991,5.9595,B,"C
+
+Explanation: 
+Statement 1 is true. If a group G is non-Abelian, then any factor group G/N (where N is a normal subgroup of G) will also be non-Abelian, because the operation is defined as (aN)(bN) = (a(bN))N",6.6667,0.0,0.0,56054500.0,131856.0,1018894.0,0.0,0.0,0.0,23.3333,4982.8333,4440.8333,91.0,0.5,9.0,0.0,0.0,55.8683,50.8333,0.0
+5,5,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,104,58,332.7233,3.2,91.7431,10.9,31.4162,6.1129,B,"To find the product of the given polynomials in the polynomial ring Z_8[x], we need to multiply them as we would in a regular polynomial multiplication, but we need to perform the operations modulo 8.
+
+f(x) = 4x - 5
+g(x) = 2x^2 -",8.3333,0.0,0.0,56028948.0,131904.0,1018896.0,0.0,0.0,0.0,20.6667,6058.5,6970.8333,86.3333,0.5,13.1667,0.0,0.0,56.1017,51.2567,0.0
+6,6,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,99,5,321.9096,3.2468,91.7431,10.9,1.3466,0.7799,A,"C. True, False",0.0,0.0,0.0,56028948.0,131932.0,1018896.0,0.0,0.0,0.0,16.0,3280.0,2504.0,62.0,0.0,37.0,0.0,0.0,54.03,50.81,0.0
+7,7,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,88,1,263.0654,2.994,89.2857,11.2,0.0,0.3527,A,A,0.0,0.0,0.0,56002608.0,131940.0,1018896.0,0.0,0.0,0.0,20.0,4930.0,5413.0,47.0,1.0,52.0,0.0,0.0,54.12,51.09,0.0
+8,8,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,70,60,252.6128,3.5971,89.2857,11.2,19.8585,5.8753,D,"A
+
+Explanation: 
+Statement 1 is true. A ring homomorphism is one-to-one if and only if its kernel is {0}. This is a fundamental property of ring homomorphisms.
+
+Statement 2 is false. Q being an ideal in R does not necessarily mean that Q is the kernel of",4.5,0.0,0.0,55972134.0,131968.0,1018900.0,0.0,0.0,0.0,24.0,4447.8333,3600.3333,81.1667,0.5,18.3333,0.0,0.0,56.0117,51.63,0.0
+9,9,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,57,59,294.5241,5.184,90.0901,11.1,20.0564,5.9498,B,"B
+
+Explanation: The field extension Q(sqrt(2) + sqrt(3)) over Q is a degree 4 extension. This is because the minimal polynomial of sqrt(2) + sqrt(3) over Q is x^4 - 10x^2 + 1, which is irreducible over Q",8.1667,0.0,0.0,55952264.0,132024.0,1018901.3333,0.0,0.0,0.0,24.6667,5068.6667,4665.5,90.6667,0.5,8.8333,0.0,0.0,56.6667,51.7217,0.0
+10,10,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,50,56,288.2007,5.7703,90.0901,11.1,28.0022,5.9497,C,"To find the zeros of the polynomial x^3 + 2x + 2 in Z_7, we need to check each element of Z_7 to see if it is a zero of the polynomial.
+
+Z_7 = {0, 1, 2, 3, 4, 5",9.0,0.0,0.0,55951934.0,132072.0,1018897.3333,0.0,0.0,0.0,18.6667,5134.8333,4925.0,87.3333,0.5,11.8333,0.0,0.0,56.8467,51.85,0.0
+11,11,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,91,1,319.508,3.5002,89.2857,11.2,0.0,0.409,C,A,1.0,0.0,0.0,55952404.0,132100.0,1018896.0,0.0,0.0,0.0,20.0,3508.0,2904.0,47.0,1.0,53.0,0.0,0.0,54.99,53.44,0.0
+12,12,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,72,1,256.7939,3.5511,89.2857,11.2,0.0,0.3461,C,D,12.0,0.0,0.0,55934580.0,132108.0,1018904.0,0.0,0.0,0.0,20.0,4082.0,4331.0,21.0,1.0,78.0,0.0,0.0,56.39,52.31,0.0
+13,13,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,58,57,236.6516,4.0833,89.2857,11.2,27.9406,5.8611,A,"Question: Find the order of the factor group (Z_11 x Z_15)///(<1, 1>) Options: A. 1 B. 2 C. 5 D. 11 Answer with only the letter corresponding to the correct answer:
+To find the order of the factor group (Z_11 x Z_15)/(<1, 1>), we need to find the order of the subgroup <1, 1> in Z_11 x Z_15 first.
+
+The subgroup <1, 1> is generated by the element (1",8.3333,0.0,0.0,55921749.3333,132136.0,1018898.6667,0.0,0.0,0.0,21.3333,4774.8333,4127.6667,88.6667,0.5,10.8333,0.0,0.0,56.8983,52.0117,0.0
+14,14,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,130,60,307.1105,2.3663,90.0901,11.1,19.7939,5.9596,C,"To factor the polynomial x^3 + 2x^2 + 2x + 1 in Z_7[x], we can use the method of polynomial long division or synthetic division. However, since we are working in Z_7[x], we can also try to find a pattern or use the fact that",4.6667,0.0,0.0,55898642.0,132182.6667,1018901.3333,0.0,0.0,0.0,17.3333,4575.5,3749.8333,87.5,0.3333,12.0,0.0,0.0,57.1433,52.4383,0.0
+15,15,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,53,59,247.3213,4.6425,90.0901,11.1,25.6857,5.9144,C,"To find the maximum possible order for an element of S_n, we need to find the maximum possible number of cycles of length 1, 2, 3, etc.
+
+For n = 10, the maximum possible order is achieved when we have as many cycles of length 2 as possible, and the remaining",6.3333,0.0,0.0,55872008.0,132224.0,1018911.3333,0.0,0.0,0.0,21.3333,5250.6667,5137.5,88.3333,0.6667,11.1667,0.0,0.0,57.0783,52.37,0.0
+16,16,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,65,61,243.816,3.7566,89.2857,11.2,19.7923,5.8783,B,"To determine the correct answer, let's analyze each statement:
+
+Statement 1: R is a splitting field of some polynomial over Q. 
+- A splitting field of a polynomial over a field is the smallest field extension in which the polynomial splits into linear factors. 
+- R is the field of real numbers, which is",8.3333,0.0,0.0,55860590.0,132280.0,1018913.3333,0.0,0.0,0.0,24.0,4999.3333,4485.1667,90.1667,0.8333,9.5,0.0,0.0,57.665,52.6033,0.0
+17,17,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,58,1,244.4309,4.1982,88.4956,11.3,0.0,0.3337,C,D,12.0,0.0,0.0,55859568.0,132300.0,1018916.0,0.0,0.0,0.0,40.0,4678.0,3575.0,99.0,1.0,1.0,0.0,0.0,57.76,52.62,0.0
+18,18,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,73,62,251.8967,3.4447,90.0901,11.1,11.7745,5.9091,C,"To compute the product in the given ring, we need to follow the rules of component-wise multiplication in the direct product of rings.
+
+In Z_5 x Z_9, we have:
+
+(2,3)(3,5) = ((2*3) mod 5, (3*5) mod",7.8333,0.0,0.0,55829930.0,132336.0,1018916.0,0.0,0.0,0.0,18.6667,5225.0,4961.5,90.3333,0.5,9.3333,0.0,0.0,57.735,52.6983,0.0
+19,19,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,62,1,296.3182,4.7574,88.4956,11.3,0.0,0.3853,D,D,12.0,0.0,0.0,55829888.0,132356.0,1018916.0,0.0,0.0,0.0,16.0,5705.0,5797.0,98.0,1.0,1.0,0.0,0.0,57.9,52.75,0.0
+20,20,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,103,1,273.5768,2.6603,108.6957,9.2,0.0,0.3829,A,A,0.0,0.0,0.0,55806132.0,132364.0,1018916.0,0.0,0.0,0.0,20.0,3395.0,3255.0,28.0,1.0,72.0,0.0,0.0,56.16,52.84,0.0
+21,21,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,100,61,266.216,2.6674,90.0901,11.1,18.3753,5.9351,A,"A
+
+Explanation: 
+Statement 1 is true. The internal direct product of two groups G and H is defined as the set G + H = {(g, h) | g ∈ G, h ∈ H} with the operation (g1, h1) * (g2, h2) = (",6.8333,0.0,0.0,55777504.0,132400.0,1018920.0,0.0,0.0,0.0,23.3333,5179.8333,4786.1667,92.5,0.8333,6.8333,0.0,0.0,57.845,52.8767,0.0
+22,22,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,104,56,330.7775,3.1766,89.2857,11.2,30.4698,5.9618,A,"To find the sum of the given polynomials in Z_8[x], we need to add the coefficients of the same degree terms.
+
+f(x) = 4x - 5
+g(x) = 2x^2 - 4x + 2
+
+First, we add the constant terms:
+-",4.3333,0.0,0.0,55750908.0,132448.0,1018915.3333,0.0,0.0,0.0,21.3333,4599.3333,3855.1667,87.3333,0.3333,12.3333,0.0,0.0,58.0083,53.115,0.0
+23,23,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,92,58,320.6292,3.4722,89.2857,11.2,26.9425,5.9638,D,"C
+
+Explanation: 
+Statement 1 is false because any set of two vectors in R^2 can be linearly dependent. For example, the vectors (1, 0) and (1, 0) are linearly dependent.
+
+Statement 2 is true. If {v1, ... , vk}",4.6667,0.0,0.0,55724098.0,132496.0,1018918.6667,0.0,0.0,0.0,20.6667,4835.5,4297.0,87.3333,0.8333,12.5,0.0,0.0,57.8567,53.5367,0.0
+24,24,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,56,1,296.3879,5.2715,88.4956,11.3,0.0,0.3854,D,"Question: The set of all nth roots of unity under multiplication of complex numbers form a///an Options: A. semi group with identity B. commutative semigroups with identity C. group D. abelian group Answer with only the letter corresponding to the correct answer:
+C",0.0,0.0,0.0,55724032.0,132524.0,1018924.0,0.0,0.0,0.0,28.0,3647.0,2724.0,73.0,0.0,27.0,0.0,0.0,56.21,53.22,0.0
+25,25,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,76,61,251.0691,3.3058,90.9091,11.0,18.1226,5.9555,B,"Question: Statement 1 | Every maximal ideal is a prime ideal. Statement 2 | If I is a maximal ideal of a commutative ring R, then R///I is field. Options: A. True, True B. False, False C. True, False D. False, True Answer with only the letter corresponding to the correct answer:
+A
+
+Explanation: 
+Statement 1 is true. Every maximal ideal is indeed a prime ideal because if a product of two elements is in a maximal ideal, then at least one of the elements must be in the maximal ideal, since the maximal ideal is a proper ideal and the product of two elements is not zero.",6.3333,0.0,0.0,55703510.0,132552.0,1018918.6667,0.0,0.0,0.0,24.0,5538.0,5870.5,81.3333,0.6667,18.1667,0.0,0.0,57.8917,53.4817,0.0
+26,26,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,72,1,306.6906,4.268,88.4956,11.3,0.0,0.396,C,"Question: Let G denoted the set of all n x n non-singular matrices with rational numbers as entries. Then under multiplication G is a///an Options: A. subgroup B. finite abelian group C. infinite, non abelian group D. ininite, abelian Answer with only the letter corresponding to the correct answer:
+D",0.0,0.0,0.0,55703552.0,132580.0,1018928.0,0.0,0.0,0.0,20.0,4122.0,3128.0,84.0,0.0,16.0,0.0,0.0,56.61,53.09,0.0
+27,27,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,78,54,285.7091,3.6536,89.2857,11.2,33.9387,5.8942,C,"A statement about groups of order 42 can be analyzed using the Sylow theorems. 
+
+A group of order 42 can be expressed as 2 * 3 * 7. 
+
+For a group of order 42, the number of Sylow 7-subgroups must be congruent to",7.6,0.0,0.0,55691264.0,132612.0,1018920.0,0.0,0.0,0.0,19.2,4874.8,4040.4,93.0,0.6,6.8,0.0,0.0,58.32,53.38,0.0
+28,28,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,90,60,298.2354,3.3156,90.0901,11.1,20.7909,5.9781,B,"To determine whether the polynomial satisfies the Eisenstein criterion, we need to find a prime number p such that p divides all the coefficients of the polynomial except the leading coefficient, and p^2 does not divide the constant term.
+
+The polynomial is 8x^3 + 6x^2 - 9x +",7.8333,0.0,0.0,55669314.0,132656.0,1018931.3333,0.0,0.0,0.0,20.6667,5178.5,5070.5,89.1667,0.5,10.6667,0.0,0.0,58.4467,53.525,0.0
+29,29,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,90,58,297.6219,3.3047,90.0901,11.1,29.0541,5.9831,D,"D. False, True
+
+Explanation: 
+
+Statement 1 is false because the image of a group under a homomorphism cannot have more elements than the group itself. The image of a group of 6 elements can have at most 6 elements.
+
+Statement 2 is true because there can be a homomorphism",10.0,0.0,0.0,55641826.0,132704.0,1018932.0,0.0,0.0,0.0,18.6667,5321.1667,5301.6667,87.3333,0.5,12.1667,0.0,0.0,58.4333,53.635,0.0
+30,30,run_llm-8b_cpu_mmlu_io_N50_t_tot_S75_rep15,LLM-8B,cpu,MMLU,io,iomix+hdd,50% N_tot,75% S_tot,t_tot,15,67,1,308.4627,4.5998,88.4956,11.3,0.0,0.3975,A,A,0.0,0.0,0.0,55641280.0,132732.0,1018936.0,0.0,0.0,0.0,32.0,3402.0,2597.0,64.0,0.0,35.0,0.0,0.0,56.52,53.47,0.0
