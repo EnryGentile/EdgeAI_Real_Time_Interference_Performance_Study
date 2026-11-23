@@ -111,12 +111,14 @@ Il caricamento del modello GGUF da 4.58 GB è strettamente legato al supporto di
 │   ├── run_config.json             # Configurazione serializzata dell'esperimento attivo
 │   └── experiment_state.json       # Checkpoint atomico con avanzamento della coda esperimenti
 ├── statistical_analysis/
+│   ├── analyze_doe_significance.py # Pipeline Python completa di analisi inferenziale DoE, i.i.d., Post-Hoc, SLO, ECDF/1-CDF
 │   ├── plot_llm_metrics.py         # Grafici di degradazione metriche LLM con riferimento Baseline (300 DPI)
-│   ├── plot_hardware_bottlenecks.py# Grafici colli di bottiglia hardware (CPU, Mem, I/O, Sys, Thermal)
-│   ├── importance_significance.jsl # Script JMP: ANOVA (SS/SST), Shapiro-Wilk residui, Kruskal-Wallis
-│   └── distributions.jsl           # Script JMP: Distribuzioni e QQ-plot univariati delle metriche
+│   ├── plot_hardware_bottlenecks.py# Grafici colli di bottiglia hardware separati CPU/GPU (CPU, Mem, I/O, Sys, Thermal)
+│   ├── importance_significance.jsl # [Opzionale JMP] ANOVA (SS/SST), Shapiro-Wilk residui, Kruskal-Wallis
+│   └── distributions.jsl           # [Opzionale JMP] Distribuzioni e QQ-plot univariati delle metriche
 ├── datasets/                       # Dataset MMLU (40 campioni) e Spider (40 campioni)
 ├── models/                         # Modelli GGUF Q4_K_M (Llama-3.2-1B e Llama-3.1-8B)
+├── resultAGX/                      # Archivio organizzato dei risultati raccolti su Jetson AGX Orin
 ├── results/                        # Risultati per-task (CSV), risposte del modello (JSON) e DoE summary
 └── timeseries/                     # Tracce telemetriche complete vmstat e termiche a 1 Hz
 ```
@@ -295,26 +297,50 @@ In qualsiasi momento puoi collegarti via Tailscale e verificare l'avanzamento:
 
 ---
 
-### FASE 6: Analisi Statistica e Grafici (Sul PC Host)
+### FASE 6: Analisi Statistica Inferenziale e Grafici (Sul PC Host)
 
-Sul computer host Windows (nella cartella di ricezione dei file CSV/JSON):
+Tutta la pipeline di analisi statistica è automatizzata in **Python** (mediante `statsmodels`, `scipy.stats`, `pandas`, `matplotlib` e `seaborn`) all'interno di `statistical_analysis/`. Gli script leggono automaticamente dalla struttura `resultAGX/` (con fallback su `results/` e `data_timeseries/`), separando sempre i contesti `CPU` e `GPU` ed evitando doppi conteggi tra `run_*_tasks.csv` e `tasks_run_*.csv`.
 
-#### 1. Generazione Grafici di Degradazione Metriche LLM
+#### 1. Pipeline Completa di Analisi Inferenziale DoE (`analyze_doe_significance.py`)
 ```powershell
-python statistical_analysis/plot_llm_metrics.py
+python statistical_analysis/analyze_doe_significance.py --model slm-1b --benchmark mmlu
 ```
-*Genera i grafici per TTFT, latenza per-token (TPOT), throughput e jitter in `figures/llm_metrics/`, confrontando le curve di carico $N$ e working-set $S$ con la linea verde tratteggiata della Baseline senza stress.*
+*(Modifica `--model` e `--benchmark` — es. `--model llm-8b --benchmark mmlu` — oppure specifica `--data-dir` per analizzare altre campagne).*
 
-#### 2. Generazione Grafici dei Colli di Bottiglia Hardware
+Lo script esporta in `figures/statistical_reports/<model>_<benchmark>/` **7 tabelle CSV** e **6 grafici comparativi** che implementano le metodologie della letteratura su *Computer Systems Performance Analysis* (Raj Jain, Hoefler & Belli, Arcuri & Briand) e *Real-Time Systems* (Davis & Cucu-Grosjean, Bristot de Oliveira et al., Splitwise/DistServe):
+
+1. **Statistica Descrittiva Robusta & Tail Latency (`1_descriptive_and_tail_latency.csv`)**:
+   - Calcola Media aritmetica (per costi temporali: TTFT, TPOT, Jitter), **Media Armonica** (`scipy.stats.hmean`, obbligatoria per i *rates* come Throughput `tok/s`), Deviazione Standard, **CoV** ($s/\bar{x}$), **Intervalli di Confidenza al 95%** sia per la media (Student's $t$) sia non parametrici per la mediana (formula ai ranghi di Le Boudec), Mediana, IQR, percentili di coda (**P90, P95, P99**) e degradazione percentuale $\Delta\%$ rispetto alla Baseline.
+2. **Modello Lineare DoE, Importanza (`SS/SST %`) & Test delle Ipotesi (`2_doe_importance_and_significance.csv`)**:
+   - Stima il modello lineare OLS (`statsmodels`) 1-way (`num_workers`) per `cpu`, `cache`, `os`, `interrupt` e 2-way con interazione (`num_workers * size`) per `mem` e `io`.
+   - Calcola la quota di varianza spiegata (**Allocation of Variation** $SS_{\text{Effect}} / SS_{\text{Total}} \times 100\%$) per ogni fattore, interazione ed errore sperimentale.
+   - Verifica automaticamente le due assunzioni parametriche sui residui e sulle celle: **Shapiro-Wilk** (normalità) e **Test di Levene** (omoschedasticità). Se entrambe sono soddisfatte ($p \ge 0.05$) usa l'**ANOVA F-test**, altrimenti commuta automaticamente sul test non parametrico **Kruskal-Wallis**.
+3. **Significatività vs Baseline & Effect Size (`3_baseline_vs_stressor_significance.csv`)**:
+   - Confronta ogni configurazione di stressor con la Baseline del rispettivo device tramite **Mann-Whitney U test** (con correzione per confronti multipli di **Holm-Bonferroni**) e Welch's t-test, affiancando gli indici standardizzati di **Effect Size**: **Cliff's $\delta$** e **Vargha-Delaney $\hat{A}_{12}$** (indispensabili per distinguere la significatività statistica dalla rilevanza pratica).
+4. **Correlazioni Hardware `vmstat` $\leftrightarrow$ Prestazioni LLM (`4_hardware_vmstat_correlations.csv`)**:
+   - Calcola la correlazione per ranghi di **Spearman ($\rho$)** tra contatori di sistema (`us`, `sy`, `id`, `wa`, `cs`, `in`, `free_kb`, `bi`, `bo`, temperature CPU/GPU) e metriche di inferenza per individuare i colli di bottiglia fisici (Root Cause Analysis).
+5. **Verifica *i.i.d.* & Stazionarietà (`5_stationarity_and_iid_tests.csv`)**:
+   - Verifica lungo le ripetizioni ordinate che reboot e transitorio post-boot abbiano garantito osservazioni indipendenti e stazionarie (prive di derive termiche o memoria residua): **Ljung-Box** (autocorrelazione lag 1–2), **Wald-Wolfowitz Runs test**, **KPSS** (stazionarietà) e **Kolmogorov-Smirnov a 2 campioni** tra prima e seconda metà delle ripetizioni.
+6. **Confronti Post-Hoc tra Livelli di Carico $N$ (`6_posthoc_worker_levels.csv`)**:
+   - Confronta tutte le coppie interne `25% N_tot` $\leftrightarrow$ `50% N_tot` $\leftrightarrow$ `75% N_tot` $\leftrightarrow$ `N_tot` mediante **Tukey HSD** e **Mann-Whitney U con Holm** + $\hat{A}_{12}$ per individuare esattamente la soglia di saturazione (*knee*).
+7. **SLO Attainment (%) & Fisher's Exact Test (`7_slo_attainment_and_fisher.csv`)**:
+   - Misura la percentuale di task entro due deadline relative alla Baseline ($1.5\times$ e $2.0\times$ `p95_baseline`) e verifica le differenze nei tassi di violazione SLO tramite **Fisher's Exact Test** (con Odds Ratio $\psi$ e correzione Holm).
+8. **Grafici Comparativi & Tail Latency Real-Time**:
+   - `heatmap_degradation_cpu_vs_gpu.png`: mappa termica del degrado `%` CPU vs GPU su tutti gli stressor.
+   - `doe_importance_ss_pct_*.png`: scomposizione della varianza spiegata ($SS/SST\%$) per TTFT e TPOT.
+   - `boxplot_baseline_vs_Ntot_cpu_gpu.png`: distribuzione Baseline vs carico massimo `N_tot`.
+   - `ecdf_cpu_vs_gpu_latency.png` e **`exceedance_1_minus_cdf_cpu_gpu.png`**: curve **ECDF** ed **Exceedance Function (`1 - CDF` su scala logaritmica)** con soglie `p95` e `p99` stile pWCET.
+
+#### 2. Generazione Grafici di Degradazione Metriche LLM (`plot_llm_metrics.py`)
 ```powershell
-python statistical_analysis/plot_hardware_bottlenecks.py
+python statistical_analysis/plot_llm_metrics.py --model slm-1b --benchmark mmlu
 ```
-*Genera i grafici a 1 riga in `figures/hardware_bottlenecks/` per le metriche `vmstat` a 1 Hz: saturazione CPU (%us, %sy, %id, %wa), utilizzo memoria/swap, blocchi I/O, context switch, interrupt e temperature termiche.*
+*Genera i pointplot con intervallo di confidenza al 95% per TTFT, TPOT, throughput e jitter in `figures/llm_metrics/`, confrontando le curve di carico $N$ e working-set $S$ con la linea tratteggiata della rispettiva Baseline.*
 
-#### 3. Analisi Statistica Avanzata in JMP
-- Apri **JMP** sul PC ed esegui [`statistical_analysis/importance_significance.jsl`](statistical_analysis/importance_significance.jsl):
-  - Calcola la quota di varianza spiegata ($SS_{\text{Effect}} / SS_{\text{Total}}$).
-  - Esegue il test di Shapiro-Wilk sui residui del modello.
-  - Se $p \ge 0.05$ (normalità rispettata), valuta il valore $p$ dell'ANOVA ($F$-test).
-  - Se $p < 0.05$ (non-normalità), esegue automaticamente il test non parametrico di **Kruskal-Wallis** ($\chi^2$).
-- Esegui [`statistical_analysis/distributions.jsl`](statistical_analysis/distributions.jsl) per ottenere istogrammi e QQ-plot univariati di tutte le metriche hardware e di sistema.
+#### 3. Generazione Grafici dei Colli di Bottiglia Hardware (`plot_hardware_bottlenecks.py`)
+```powershell
+python statistical_analysis/plot_hardware_bottlenecks.py --model slm-1b --benchmark mmlu
+```
+*Genera i grafici in `figures/hardware_bottlenecks/<model>_<device>_<bench>/` separando nettamente CPU e GPU per le metriche `vmstat` a 1 Hz: saturazione CPU (`%us`, `%sy`, `%id`, `%wa`), memoria/swap, blocchi I/O (`bi`, `bo`), context switch (`cs`), interrupt (`in`) e temperature.*
+
+*(Nota: gli script JMP `importance_significance.jsl` e `distributions.jsl` sono mantenuti solo come alternativa grafica opzionale per JMP; tutta la pipeline statistica completa è coperta dagli script Python sopra).*

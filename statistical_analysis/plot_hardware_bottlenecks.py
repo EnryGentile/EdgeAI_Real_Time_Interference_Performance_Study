@@ -22,8 +22,9 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 TIMESERIES_DIR = PROJECT_ROOT / "data_timeseries"
+AGX_DIR = PROJECT_ROOT / "resultAGX"
 FIGURES_DIR = PROJECT_ROOT / "figures" / "hardware_bottlenecks"
-MASTER_CSV = PROJECT_ROOT / "master_experiment_summary.csv"
+MASTER_CSV = AGX_DIR / "master_experiment_summary.csv" if (AGX_DIR / "master_experiment_summary.csv").exists() else (PROJECT_ROOT / "master_experiment_summary.csv")
 
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 plt.style.use('seaborn-v0_8-whitegrid' if 'seaborn-v0_8-whitegrid' in plt.style.available else 'default')
@@ -43,11 +44,26 @@ METRIC_GROUPS = [
 ]
 
 
-def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
-    """Carica e aggrega tutte le time-series vmstat presenti in data_timeseries/."""
-    ts_files = glob.glob(str(TIMESERIES_DIR / "*_timeseries.csv"))
+def parse_timeseries_data(
+    target_duration: str = "t_tot",
+    search_dir: Path | None = None,
+    model_filter: str | None = None,
+    device_filter: str | None = None,
+    bench_filter: str | None = None,
+) -> pd.DataFrame:
+    """Carica e aggrega le time-series vmstat cercando ricorsivamente in resultAGX/ o nella cartella indicata."""
+    ts_files: list[str] = []
+    if search_dir is not None:
+        ts_files = [str(p) for p in search_dir.rglob("*_timeseries.csv")]
+    else:
+        for cand in (AGX_DIR, TIMESERIES_DIR, PROJECT_ROOT / "timeseries"):
+            if cand.exists():
+                ts_files.extend(str(p) for p in cand.rglob("*_timeseries.csv"))
+
+    # Esclude file di fallback parziali
+    ts_files = [p for p in ts_files if not os.path.basename(p).lower().startswith("fallback_partial_")]
     if not ts_files:
-        print(f" [AVVISO] Nessun file time-series trovato in: {TIMESERIES_DIR}")
+        print(" [AVVISO] Nessun file time-series trovato.")
         return pd.DataFrame()
 
     records = []
@@ -86,6 +102,13 @@ def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
         else:
             continue
 
+        if model_filter and model_filter.lower() not in model_val.lower():
+            continue
+        if device_filter and dev_val.lower() != device_filter.lower():
+            continue
+        if bench_filter and bench_val.lower() != bench_filter.lower():
+            continue
+
         try:
             sub_df = pd.read_csv(filepath)
             # Rinomina colonne abbreviate se necessario per allineamento
@@ -112,7 +135,7 @@ def parse_timeseries_data(target_duration: str = "t_tot") -> pd.DataFrame:
 
 
 def plot_hardware_groups(df_hw: pd.DataFrame, target_duration: str = "t_tot"):
-    """Genera i grafici per ciascuna famiglia hardware (CPU, Memoria, I/O, Sistema, Termico)."""
+    """Genera i grafici per ciascuna combinazione (modello, device, benchmark) e famiglia hardware."""
     if df_hw.empty:
         return
 
@@ -122,61 +145,65 @@ def plot_hardware_groups(df_hw: pd.DataFrame, target_duration: str = "t_tot"):
         df_hw = df_hw[df_hw["duration"] == target_duration].copy()
         print(f" -> Filtro hardware applicato: duration='{target_duration}' ({len(df_hw)} record)")
 
-    stressors = [s for s in df_hw["stressor"].unique() if s != "baseline"]
-    if not stressors:
-        print(" [AVVISO] Nessuno stressor trovato nei file time-series per il plotting.")
-        return
-
     df_hw["n_workers"] = pd.Categorical(df_hw["n_workers"], categories=N_ORDER, ordered=True)
 
-    for s in stressors:
-        is_3d = s.lower() in STRESSOR_WITH_SIZE
-        sizes = S_ORDER if is_3d else ["N/A"]
-        if is_3d and "size" in df_hw.columns:
-            df_hw["size"] = pd.Categorical(df_hw["size"], categories=S_ORDER + ["N/A"], ordered=True)
+    for (m_val, d_val, b_val), df_ctx in df_hw.groupby(["model", "device", "benchmark"], dropna=False):
+        stressors = [s for s in df_ctx["stressor"].unique() if s != "baseline"]
+        if not stressors:
+            continue
 
-        for grp_key, grp_title, col_tuples in METRIC_GROUPS:
-            ncols = len(sizes)
-            nrows = 1  # Durata e sempre costante a t_tot
+        ctx_tag = f"{str(m_val).lower()}_{str(d_val).lower()}_{str(b_val).lower()}"
+        ctx_out_dir = FIGURES_DIR / ctx_tag
+        ctx_out_dir.mkdir(parents=True, exist_ok=True)
+        print(f"\n[HW PLOT] Contesto: {ctx_tag} ({len(df_ctx)} file)")
 
-            fig, axes = plt.subplots(
-                nrows=nrows,
-                ncols=ncols,
-                figsize=(5.5 * ncols, 4.5),
-                sharey=False,
-                squeeze=False
-            )
+        for s in stressors:
+            is_3d = s.lower() in STRESSOR_WITH_SIZE
+            sizes = S_ORDER if is_3d else ["N/A"]
+            df_sub_ctx = df_ctx.copy()
+            if is_3d and "size" in df_sub_ctx.columns:
+                df_sub_ctx["size"] = pd.Categorical(df_sub_ctx["size"], categories=S_ORDER + ["N/A"], ordered=True)
 
-            has_plotted_any = False
+            for grp_key, grp_title, col_tuples in METRIC_GROUPS:
+                ncols = len(sizes)
+                fig, axes = plt.subplots(
+                    nrows=1,
+                    ncols=ncols,
+                    figsize=(5.5 * ncols, 4.5),
+                    sharey=False,
+                    squeeze=False
+                )
 
-            for c_idx, sz in enumerate(sizes):
-                ax = axes[0, c_idx]
-                cond = (df_hw["stressor"] == s)
-                if is_3d:
-                    cond = cond & (df_hw["size"] == sz)
+                has_plotted_any = False
 
-                sub = df_hw[cond].groupby("n_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
+                for c_idx, sz in enumerate(sizes):
+                    ax = axes[0, c_idx]
+                    cond = (df_sub_ctx["stressor"] == s)
+                    if is_3d:
+                        cond = cond & (df_sub_ctx["size"] == sz)
 
-                for col_name, label in col_tuples:
-                    if col_name in sub.columns and sub[col_name].notna().any():
-                        ax.plot(sub.index, sub[col_name], marker='o', linewidth=1.8, label=label)
-                        has_plotted_any = True
+                    sub = df_sub_ctx[cond].groupby("n_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
 
-                header = f"Stressor: {s.upper()} (t_tot)" + (f" | Size: {sz}" if is_3d else "")
-                ax.set_title(header, fontsize=11, fontweight="bold")
-                ax.set_xlabel("Livelli Carico Worker (N)", fontsize=10, fontweight="bold")
-                if c_idx == 0:
-                    ax.set_ylabel("Valore Medio", fontsize=10, fontweight="bold")
-                ax.grid(True, linestyle="--", alpha=0.6)
-                ax.legend(loc="best", frameon=True, fontsize=9)
+                    for col_name, label in col_tuples:
+                        if col_name in sub.columns and sub[col_name].notna().any():
+                            ax.plot(sub.index, sub[col_name], marker='o', linewidth=1.8, label=label)
+                            has_plotted_any = True
 
-            if has_plotted_any:
-                fig.suptitle(f"{grp_title} - Impatto Interferenza ({s.upper()})", fontsize=13, fontweight="bold")
-                fig.tight_layout()
-                out_path = FIGURES_DIR / f"{s}_{grp_key}_bottleneck.png"
-                fig.savefig(out_path, dpi=300, bbox_inches="tight")
-                print(f"   [OK] Grafico hardware salvato: {out_path.name}")
-            plt.close(fig)
+                    header = f"{m_val.upper()} {d_val.upper()} | {s.upper()} (t_tot)" + (f" | {sz}" if is_3d else "")
+                    ax.set_title(header, fontsize=11, fontweight="bold")
+                    ax.set_xlabel("Livelli Carico Worker (N)", fontsize=10, fontweight="bold")
+                    if c_idx == 0:
+                        ax.set_ylabel("Valore Medio", fontsize=10, fontweight="bold")
+                    ax.grid(True, linestyle="--", alpha=0.6)
+                    ax.legend(loc="best", frameon=True, fontsize=9)
+
+                if has_plotted_any:
+                    fig.suptitle(f"{grp_title} - {m_val.upper()} ({d_val.upper()}) - Stressor {s.upper()}", fontsize=13, fontweight="bold")
+                    fig.tight_layout()
+                    out_path = ctx_out_dir / f"{ctx_tag}_{s}_{grp_key}_bottleneck.png"
+                    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+                    print(f"   [OK] Grafico hardware salvato: {out_path.name}")
+                plt.close(fig)
 
 
 def plot_master_microarchitecture(target_duration: str = "t_tot"):
@@ -263,11 +290,22 @@ def plot_master_microarchitecture(target_duration: str = "t_tot"):
 
 def main():
     parser = argparse.ArgumentParser(description="Visualizzazione dei colli di bottiglia hardware e serie temporali.")
+    parser.add_argument("--data-dir", type=str, default=None, help="Cartella radice con le serie temporali (default: resultAGX o data_timeseries).")
+    parser.add_argument("--model", type=str, default=None, help="Filtra per modello (es. slm-1b, llm-8b).")
+    parser.add_argument("--device", type=str, default=None, help="Filtra per device (es. cpu, gpu).")
+    parser.add_argument("--benchmark", type=str, default=None, help="Filtra per benchmark (es. mmlu, spider).")
     parser.add_argument("--duration", type=str, default="t_tot", help="Durata da filtrare (default: t_tot).")
     args = parser.parse_args()
 
-    print(f"\n[ANALISI HARDWARE] Parsing serie temporali in: {TIMESERIES_DIR}")
-    df_hw = parse_timeseries_data(target_duration=args.duration)
+    search_dir = Path(args.data_dir) if args.data_dir else None
+    print(f"\n[ANALISI HARDWARE] Parsing serie temporali in: {search_dir or (AGX_DIR if AGX_DIR.exists() else TIMESERIES_DIR)}")
+    df_hw = parse_timeseries_data(
+        target_duration=args.duration,
+        search_dir=search_dir,
+        model_filter=args.model,
+        device_filter=args.device,
+        bench_filter=args.benchmark,
+    )
     plot_hardware_groups(df_hw, target_duration=args.duration)
     plot_master_microarchitecture(target_duration=args.duration)
     print(f"\n[COMPLETATO] Tutti i grafici hardware sono stati esportati in: {FIGURES_DIR}")

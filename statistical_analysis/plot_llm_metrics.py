@@ -21,6 +21,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
+AGX_DIR = PROJECT_ROOT / "resultAGX"
 FIGURES_DIR = PROJECT_ROOT / "figures" / "llm_metrics"
 
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
@@ -39,13 +40,28 @@ METRICS = [
 ]
 
 
-def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str) -> dict:
-    """Carica le medie della baseline dal file doe_*_none.csv corrispondente, se disponibile."""
-    pattern = str(RESULTS_DIR / f"doe_{model_tag}_{device_tag}_{bench_tag}_none.csv")
-    matches = glob.glob(pattern)
+def _default_search_roots(custom_dir: str | None = None) -> list[Path]:
+    """Restituisce le cartelle di ricerca ordinate per priorita (custom -> resultAGX -> results)."""
+    if custom_dir:
+        return [Path(custom_dir)]
+    roots = []
+    if AGX_DIR.exists():
+        roots.append(AGX_DIR)
+    if RESULTS_DIR.exists():
+        roots.append(RESULTS_DIR)
+    return roots or [PROJECT_ROOT]
+
+
+def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str, search_roots: list[Path] | None = None) -> dict:
+    """Carica le medie della baseline dal file doe_*_none.csv corrispondente, cercando anche ricorsivamente in resultAGX/."""
+    roots = search_roots or _default_search_roots()
+    target_name = f"doe_{model_tag}_{device_tag}_{bench_tag}_none.csv"
+    matches: list[Path] = []
+    for root in roots:
+        matches.extend(root.rglob(target_name))
     if not matches:
-        pattern = str(RESULTS_DIR / "doe_*_none.csv")
-        matches = glob.glob(pattern)
+        for root in roots:
+            matches.extend(root.rglob("doe_*_none.csv"))
 
     baseline_means = {}
     if matches:
@@ -59,7 +75,7 @@ def load_baseline_mean(model_tag: str, device_tag: str, bench_tag: str) -> dict:
     return baseline_means
 
 
-def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t_tot"):
+def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t_tot", search_roots: list[Path] | None = None):
     """Genera i grafici di degradazione per un singolo file DoE."""
     if not csv_path.exists():
         print(f" [AVVISO] File non trovato: {csv_path}")
@@ -101,7 +117,7 @@ def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t
     bench_tag = parts[2] if len(parts) > 2 else "mmlu"
     stressor_tag = "_".join(parts[3:]) if len(parts) > 3 else "stressor"
 
-    baseline_means = load_baseline_mean(model_tag, device_tag, bench_tag)
+    baseline_means = load_baseline_mean(model_tag, device_tag, bench_tag, search_roots=search_roots)
 
     output_subdir.mkdir(parents=True, exist_ok=True)
 
@@ -170,30 +186,45 @@ def plot_doe_file(csv_path: Path, output_subdir: Path, target_duration: str = "t
 def main():
     parser = argparse.ArgumentParser(description="Visualizzazione della degradazione delle metriche LLM (DoE).")
     parser.add_argument("--csv", type=str, default=None, help="Percorso di un file DoE CSV specifico.")
+    parser.add_argument("--data-dir", type=str, default=None, help="Cartella radice in cui cercare ricorsivamente i file doe_*.csv (default: resultAGX o results).")
+    parser.add_argument("--model", type=str, default=None, help="Filtra per modello (es. slm-1b, llm-8b).")
+    parser.add_argument("--device", type=str, default=None, help="Filtra per device (es. cpu, gpu).")
+    parser.add_argument("--benchmark", type=str, default=None, help="Filtra per benchmark (es. mmlu, spider).")
     parser.add_argument("--duration", type=str, default="t_tot", help="Durata da filtrare (default: t_tot).")
     args = parser.parse_args()
 
-    target_files = []
+    search_roots = _default_search_roots(args.data_dir)
+    target_files: list[Path] = []
     if args.csv:
         target_files.append(Path(args.csv))
     else:
-        # Cerca tutti i file doe_*.csv in results/ (escluso doe_*_none.csv che e la baseline)
-        found = [Path(p) for p in glob.glob(str(RESULTS_DIR / "doe_*.csv")) if "_none.csv" not in p]
-        if found:
-            target_files.extend(found)
-        else:
-            # Fallback su doe_example.csv se presente
-            example_csv = PROJECT_ROOT / "doe_example.csv"
+        seen = set()
+        for root in search_roots:
+            for p in sorted(root.rglob("doe_*.csv")):
+                name_low = p.name.lower()
+                if "_none.csv" in name_low:
+                    continue
+                if args.model and args.model.lower() not in name_low:
+                    continue
+                if args.device and f"_{args.device.lower()}_" not in name_low:
+                    continue
+                if args.benchmark and f"_{args.benchmark.lower()}_" not in name_low:
+                    continue
+                if p.resolve() not in seen:
+                    seen.add(p.resolve())
+                    target_files.append(p)
+        if not target_files:
+            example_csv = PROJECT_ROOT / "CSV_MOCK" / "doe_example.csv"
             if example_csv.exists():
                 target_files.append(example_csv)
 
     if not target_files:
-        print(" [ERRORE] Nessun file DoE CSV trovato in results/ ne nella root del progetto.")
+        print(" [ERRORE] Nessun file DoE CSV trovato in resultAGX/ ne in results/.")
         sys.exit(1)
 
     for csv_file in target_files:
         subdir = FIGURES_DIR / csv_file.stem.replace("doe_", "")
-        plot_doe_file(csv_file, subdir, target_duration=args.duration)
+        plot_doe_file(csv_file, subdir, target_duration=args.duration, search_roots=search_roots)
 
     print(f"\n[COMPLETATO] Tutti i grafici sono stati generati in: {FIGURES_DIR}")
 
