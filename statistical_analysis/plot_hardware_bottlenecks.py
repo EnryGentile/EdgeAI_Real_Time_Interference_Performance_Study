@@ -98,6 +98,8 @@ def parse_timeseries_data(
             sz = sz if sz else "N/A"
             model_val, dev_val, bench_val = "N/A", "N/A", "N/A"
         elif m_bas:
+            if target_duration != "baseline":
+                continue
             model_val, dev_val, bench_val, rep = m_bas.groups()
             stressor, n_w, dur, sz = "baseline", "N0", "baseline", "N/A"
         else:
@@ -200,8 +202,13 @@ def plot_hardware_groups(df_hw: pd.DataFrame, target_duration: str = "t_tot"):
             plt.close(fig)
 
 
-def plot_master_microarchitecture(target_duration: str = "t_tot"):
-    """Visualizza metriche microarchitetturali e termiche da master_experiment_summary.csv."""
+def plot_master_microarchitecture(
+    target_duration: str = "t_tot",
+    model_filter: str | None = None,
+    device_filter: str | None = None,
+    bench_filter: str | None = None,
+):
+    """Visualizza metriche microarchitetturali e termiche da master_experiment_summary.csv filtrando per contesto."""
     if not MASTER_CSV.exists():
         return
 
@@ -213,73 +220,90 @@ def plot_master_microarchitecture(target_duration: str = "t_tot"):
     if "S_size" in df_master.columns:
         df_master.rename(columns={"S_size": "size"}, inplace=True)
 
+    if model_filter and "model_id" in df_master.columns:
+        df_master = df_master[df_master["model_id"].astype(str).str.lower().str.contains(model_filter.lower(), na=False)].copy()
+    if device_filter and "device" in df_master.columns:
+        df_master = df_master[df_master["device"].astype(str).str.lower() == device_filter.lower()].copy()
+    if bench_filter and "benchmark" in df_master.columns:
+        df_master = df_master[df_master["benchmark"].astype(str).str.lower() == bench_filter.lower()].copy()
+
     if "duration" in df_master.columns and target_duration in df_master["duration"].values:
         df_master = df_master[df_master["duration"] == target_duration].copy()
 
     if df_master.empty:
         return
 
-    df_master["num_workers"] = pd.Categorical(df_master["num_workers"], categories=N_ORDER, ordered=True)
+    # Evita di generare grafici con solo temperatura se mancano i contatori microarchitetturali perf_*
+    if not any(c in df_master.columns and df_master[c].notna().any() for c in ("perf_cache_misses", "perf_branch_misses")):
+        return
 
-    for sc in df_master["stressor_class"].dropna().unique():
-        sc_clean = str(sc).lower()
-        if sc_clean in ("none", "baseline"):
-            continue
+    ctx_cols = [c for c in ("model_id", "device", "benchmark") if c in df_master.columns]
+    groups = df_master.groupby(ctx_cols, dropna=False) if ctx_cols else [((), df_master)]
 
-        is_3d = sc_clean in STRESSOR_WITH_SIZE
-        sizes = S_ORDER if is_3d else ["N/A"]
-        ncols = len(sizes)
+    for ctx_key, df_ctx in groups:
+        ctx_label = "_".join(str(x).lower() for x in (ctx_key if isinstance(ctx_key, tuple) else (ctx_key,)))
+        df_ctx = df_ctx.copy()
+        df_ctx["num_workers"] = pd.Categorical(df_ctx["num_workers"], categories=N_ORDER, ordered=True)
 
-        fig, axes = plt.subplots(nrows=1, ncols=ncols, figsize=(6.0 * ncols, 4.5), squeeze=False)
-        has_data = False
+        for sc in df_ctx["stressor_class"].dropna().unique():
+            sc_clean = str(sc).lower()
+            if sc_clean in ("none", "baseline"):
+                continue
 
-        for c_idx, sz in enumerate(sizes):
-            ax1 = axes[0, c_idx]
-            cond = (df_master["stressor_class"] == sc)
-            if is_3d and "size" in df_master.columns:
-                cond = cond & (df_master["size"] == sz)
+            is_3d = sc_clean in STRESSOR_WITH_SIZE
+            sizes = S_ORDER if is_3d else ["N/A"]
+            ncols = len(sizes)
 
-            sub = df_master[cond].groupby("num_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
+            fig, axes = plt.subplots(nrows=1, ncols=ncols, figsize=(6.0 * ncols, 4.5), squeeze=False)
+            has_data = False
 
-            lines = []
-            labels = []
-            if "perf_cache_misses" in sub.columns and sub["perf_cache_misses"].notna().any():
-                l1 = ax1.plot(sub.index, sub["perf_cache_misses"], 'r-o', linewidth=1.8, label="Cache Misses")
-                lines.extend(l1)
-                labels.append("Cache Misses")
-                has_data = True
+            for c_idx, sz in enumerate(sizes):
+                ax1 = axes[0, c_idx]
+                cond = (df_ctx["stressor_class"] == sc)
+                if is_3d and "size" in df_ctx.columns:
+                    cond = cond & (df_ctx["size"] == sz)
 
-            if "perf_branch_misses" in sub.columns and sub["perf_branch_misses"].notna().any():
-                l2 = ax1.plot(sub.index, sub["perf_branch_misses"], 'm--^', linewidth=1.8, label="Branch Misses")
-                lines.extend(l2)
-                labels.append("Branch Misses")
-                has_data = True
+                sub = df_ctx[cond].groupby("num_workers", observed=False).mean(numeric_only=True).reindex(N_ORDER)
 
-            ax1.set_xlabel("Livelli Carico Worker (N)", fontsize=10, fontweight="bold")
-            ax1.set_ylabel("Miss Counter", fontsize=10, fontweight="bold")
-            ax1.grid(True, linestyle="--", alpha=0.6)
+                lines = []
+                labels = []
+                if "perf_cache_misses" in sub.columns and sub["perf_cache_misses"].notna().any():
+                    l1 = ax1.plot(sub.index, sub["perf_cache_misses"], 'r-o', linewidth=1.8, label="Cache Misses")
+                    lines.extend(l1)
+                    labels.append("Cache Misses")
+                    has_data = True
 
-            # Eventuale secondo asse Y per la temperatura CPU
-            if "avg_cpu_temp_c" in sub.columns and sub["avg_cpu_temp_c"].notna().any():
-                ax2 = ax1.twinx()
-                l3 = ax2.plot(sub.index, sub["avg_cpu_temp_c"], 'b-s', linewidth=1.8, label="CPU Temp (°C)")
-                lines.extend(l3)
-                labels.append("CPU Temp (°C)")
-                ax2.set_ylabel("Temperatura CPU (°C)", fontsize=10, color="blue")
-                has_data = True
+                if "perf_branch_misses" in sub.columns and sub["perf_branch_misses"].notna().any():
+                    l2 = ax1.plot(sub.index, sub["perf_branch_misses"], 'm--^', linewidth=1.8, label="Branch Misses")
+                    lines.extend(l2)
+                    labels.append("Branch Misses")
+                    has_data = True
 
-            header = f"Microarchitettura: {sc_clean.upper()} (t_tot)" + (f" | Size: {sz}" if is_3d else "")
-            ax1.set_title(header, fontsize=11, fontweight="bold")
-            if lines:
-                ax1.legend(lines, labels, loc="best", frameon=True, fontsize=9)
+                ax1.set_xlabel("Livelli Carico Worker (N)", fontsize=10, fontweight="bold")
+                ax1.set_ylabel("Miss Counter", fontsize=10, fontweight="bold")
+                ax1.grid(True, linestyle="--", alpha=0.6)
 
-        if has_data:
-            fig.suptitle(f"Metriche Microarchitetturali - Stressor: {sc_clean.upper()}", fontsize=13, fontweight="bold")
-            fig.tight_layout()
-            out_p = FIGURES_DIR / f"{sc_clean}_microarchitecture_bottleneck.png"
-            fig.savefig(out_p, dpi=300, bbox_inches="tight")
-            print(f"   [OK] Grafico microarchitettura salvato: {out_p.name}")
-        plt.close(fig)
+                if "avg_cpu_temp_c" in sub.columns and sub["avg_cpu_temp_c"].notna().any():
+                    ax2 = ax1.twinx()
+                    l3 = ax2.plot(sub.index, sub["avg_cpu_temp_c"], 'b-s', linewidth=1.8, label="CPU Temp (°C)")
+                    lines.extend(l3)
+                    labels.append("CPU Temp (°C)")
+                    ax2.set_ylabel("Temperatura CPU (°C)", fontsize=10, color="blue")
+                    has_data = True
+
+                header = f"Microarchitettura: {sc_clean.upper()} (t_tot)" + (f" | Size: {sz}" if is_3d else "")
+                ax1.set_title(header, fontsize=11, fontweight="bold")
+                if lines:
+                    ax1.legend(lines, labels, loc="best", frameon=True, fontsize=9)
+
+            if has_data:
+                prefix = f"{ctx_label}_" if ctx_label else ""
+                fig.suptitle(f"Metriche Microarchitetturali - Stressor: {sc_clean.upper()}" + (f" ({ctx_label})" if ctx_label else ""), fontsize=13, fontweight="bold")
+                fig.tight_layout()
+                out_p = FIGURES_DIR / f"{prefix}{sc_clean}_microarchitecture_bottleneck.png"
+                fig.savefig(out_p, dpi=300, bbox_inches="tight")
+                print(f"   [OK] Grafico microarchitettura salvato: {out_p.name}")
+            plt.close(fig)
 
 
 def main():
@@ -303,7 +327,12 @@ def main():
         max_reps=args.max_reps,
     )
     plot_hardware_groups(df_hw, target_duration=args.duration)
-    plot_master_microarchitecture(target_duration=args.duration)
+    plot_master_microarchitecture(
+        target_duration=args.duration,
+        model_filter=args.model,
+        device_filter=args.device,
+        bench_filter=args.benchmark,
+    )
     print(f"\n[COMPLETATO] Tutti i grafici hardware sono stati esportati in: {FIGURES_DIR}")
 
 

@@ -63,11 +63,12 @@ per rispondere a una domanda specifica della caratterizzazione prestazionale rea
       bilanciate (20 repliche x 4 livelli), Type II e' lo standard per il test dell'effetto
       principale N.
     * Stressor 3D (mem, io -> fattori N = num_workers e S = size + interazione N:S):
-      Viene stimato un modello lineare fattoriale OLS completo con interazione
-      (metric ~ C(num_workers) * C(size)) utilizzando **Two-Way Factorial ANOVA con Somma dei
-      Quadrati di Type III**. La scelta di **Type III** (somme dei quadrati parziali/marginali)
-      e' fondamentale nei piani fattoriali con interazione perche' valuta ogni effetto
-      principale (N, S) e l'interazione (N:S) al netto di tutti gli altri termini del modello.
+      Viene stimato un modello lineare fattoriale OLS completo con interazione e codifica
+      ortogonale a somma zero (`C(num_workers, Sum) * C(size, Sum)`) utilizzando **Two-Way
+      Factorial ANOVA con Somma dei Quadrati di Type III**. La scelta di **Type III** con
+      contrasti `Sum` e' fondamentale nei piani fattoriali con interazione per stimare
+      ortogonalmente gli effetti principali marginali (N, S) e l'interazione (N:S), garantendo
+      che la somma delle quote SS/SST (%) eguagli esattamente R^2.
   - Regola adattiva ANOVA F-test vs Kruskal-Wallis (H0: medie/ranghi uguali tra livelli):
     * Se Shapiro-Wilk (p >= 0.05) E Levene (p >= 0.05) sono entrambi soddisfatti -> si adotta
       l'**ANOVA F-test** parametrico.
@@ -238,9 +239,9 @@ SEZIONE 2: PANORAMICA GENERALE DEGLI STRESSOR SU GPU (rep 1..20)
          MEM TTFT/Jitter, OS Jitter, INTERRUPT TTFT per code pesanti, CACHE Jitter per Levene
          p = 0.0457) -> la pipeline passa automaticamente a **Kruskal-Wallis** sui ranghi.
      - In [doe_importance_ss_pct_*.png] (pannelli GPU) l'errore sperimentale residuo domina
-       perche' lo stacco principale avviene gia' a N25; le quote spiegate maggiori riguardano
-       MEM Jitter (24.31% N), INTERRUPT TTFT (16.67% N), OS Jitter/TPOT (14.69%/11.92% N) e
-       MEM Throughput/TPOT (8.72%/8.00% N + 2.86%/2.23% S).
+       su quasi tutti i modelli, fatta eccezione per MEM Jitter (54.66% N); le altre quote
+       spiegate maggiori riguardano MEM TPOT/Throughput (21.91%/21.04% N + 4.93%/4.46% S),
+       INTERRUPT TTFT (16.67% N) e OS Jitter/TPOT (14.69%/11.92% N).
   4) SLO Attainment, Exceedance e i.i.d. globale:
      - In [exceedance_1_minus_cdf_cpu_gpu.png] (GPU), solo MEM e IO estendono la coda p99 su
        TPOT, e INTERRUPT/MEM/IO su TTFT. Lo SLO attainment resta tra 99.17%-100.00% (1.5x) e
@@ -265,8 +266,8 @@ Immagini utilizzate:
   - figures/statistical_reports/slm-1b_mmlu/{heatmap_degradation_cpu_vs_gpu,doe_importance_ss_pct_*,exceedance_1_minus_cdf_cpu_gpu}.png
 
 Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitted):
-  - Modello stimato: **OLS Two-Way Factorial ANOVA con interazione (N * S) e Somma dei Quadrati Type III**
-    (scelto Type III per stimare ortogonalmente gli effetti principali N, S e l'interazione N:S).
+  - Modello stimato: **OLS Two-Way Factorial ANOVA con interazione (`Sum` coding N * S) e Somma dei Quadrati Type III**
+    (contrasti ortogonali a somma zero per stimare gli effetti principali marginali N, S e l'interazione N:S).
   - Verifica assunzioni e residui nei grafici [residuals_diagnostics_gpu_*.png]:
     * per_token_lat_ms : Residui perfettamente allineati sulla diagonale Q-Q
                          (Shapiro-Wilk W = 0.9947, p = 0.5718 -> Normal = True), varianza
@@ -284,15 +285,16 @@ Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitte
 
 Risultati statistici:
   - Effetti DoE (SS/SST %) e Post-Hoc (tabelle 2 e 6):
-    * ttft_ms          : R^2 = 0.1705; N sig. (Kruskal p = 3.23e-05, imp = 4.62%), S non sig.
-                         (p = 0.3695, 1.74%), N:S diagnostica p = 0.0505 (4.98%).
-    * per_token_lat_ms : R^2 = 0.2837; N sig. (ANOVA Type III F = 6.92, p = 1.78e-04, imp = 8.00%),
-                         S marginale non sig. (p = 0.0576, 2.23%), N:S non sig. (p = 0.5609, 1.88%).
-                         Post-hoc Tukey/MWU-Holm: salto da N25 a N50/N75/N100 (p < 1e-4).
-    * throughput_tok_s : R^2 = 0.2726; N sig. (ANOVA Type III F = 7.68, p = 6.55e-05, imp = 8.72%)
-                         e **S sig. (F = 3.77, p = 0.0244, imp = 2.86%)**, N:S non sig. (p = 0.4832).
-    * jitter_ms        : R^2 = 0.5654; N fortemente sig. (Kruskal p = 9.93e-25, imp = 24.31%),
-                         S non sig. (p = 0.6307); post-hoc N25/N50 != N75/N100 (p < 1e-12).
+    * ttft_ms          : R^2 = 0.1705; N sig. (Kruskal p = 3.23e-05, imp = 11.83%), S non sig.
+                         (p = 0.3695, imp = 0.57%), N:S diagnostica p = 0.0505 (imp = 4.66%).
+    * per_token_lat_ms : R^2 = 0.2837; N sig. (ANOVA Type III F = 23.25, p = 3.62e-13, imp = 21.91%),
+                         **S sig. (F = 7.85, p = 5.06e-04, imp = 4.93%)**, N:S non sig. (p = 0.5609, 1.53%).
+                         Post-hoc Tukey/MWU-Holm su N: salto da N25 a N50/N75/N100 (p < 1e-4).
+    * throughput_tok_s : R^2 = 0.2726; N sig. (ANOVA Type III F = 21.98, p = 1.53e-12, imp = 21.04%)
+                         e **S sig. (F = 6.99, p = 1.13e-03, imp = 4.46%)**, N:S non sig. (p = 0.4832, 1.76%).
+    * jitter_ms        : R^2 = 0.5654; N fortemente sig. (Kruskal p = 9.93e-25, imp = 54.66%),
+                         S non sig. (p = 0.6307, 0.06%); post-hoc N25/N50 != N75/N100 (p < 1e-12;
+                         inoltre N25 vs N50 debolmente sig. al MWU-Holm p = 0.0220, non in Tukey).
   - Baseline vs Stressor (tabella 3, MWU-Holm, Welch e Effect Size):
     12/12 celle significative su TUTTE E 4 le metriche (MWU Holm p <= 9.29e-03, Welch
     p <= 8.64e-03, Cliff's delta = large su tutte): TTFT +9.49%..+10.13% (p99 fino a 41.62 ms),
@@ -300,12 +302,14 @@ Risultati statistici:
     Throughput -0.27%..-0.50%, Jitter +0.75%..+3.46%.
   - Bottleneck & Spearman (tabella 4): [slm-1b_gpu_mmlu_mem_bottleneck.png] mostra nel pannello
     `Parametri Memoria` RAM libera stabile (~6e7 KB, zero swap), nel pannello `Parametri CPU`
-    un leggero aumento `us` (1.8%) correlato con TPOT (rho = +0.3242, p = 2.8e-07), e nel
-    pannello `Parametri Termici` temperatura ~51.4-52.7 C.
+    un aumento di `us` lungo N (1.59% -> 2.83%, media time-series 2.27%; media per-task 1.82%)
+    correlato con TPOT (rho = +0.3242, p = 2.8e-07), e nel pannello `Parametri Termici`
+    temperatura ~51.4-52.7 C.
 
 Conclusioni su MEM:
   Unico stressor con impatto statisticamente significativo su 12/12 celle e tutte e 4 le
-  metriche per contesa sulla banda della memoria unificata (UMA/LPDDR5) condivisa con GPU.
+  metriche (con effetto significativo sia di N sia della working-set size S su TPOT e
+  Throughput) per contesa sulla banda della memoria unificata (UMA/LPDDR5) condivisa con GPU.
 
 
 --------------------------------------------------------------------------------
@@ -336,8 +340,8 @@ Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitte
 Risultati statistici:
   - Effetti DoE e Post-Hoc: Kruskal-Wallis significativo per N su tutte le 4 metriche (ttft
     p = 7.40e-07, tpot p = 2.20e-28, tps p = 1.16e-23, jitter p = 9.23e-34); S (p = 0.18..0.71)
-    e N:S (p = 0.087..0.501) non significativi. Post-hoc MWU-Holm significativo tra quasi tutte
-    le coppie di N su TPOT, TPS e Jitter.
+    e N:S (p = 0.087..0.501) non significativi. Post-hoc MWU-Holm significativo su tutte e 6/6
+    le coppie di N per TPOT, TPS e Jitter (e 3/6 coppie su TTFT).
   - Baseline vs Stressor (tabella 3): 12/12 sig. TTFT (+9.26%..+10.00%, p_holm = 2.71e-06),
     7/12 TPOT (-0.03%..+1.26%), 9/12 TPS (-0.80%..-0.00%), 9/12 Jitter (-0.78%..+3.42%),
     coerente anche con Welch (12/12, 8/12, 8/12, 9/12). L'outlier N75/S50 produce l'unico
@@ -377,7 +381,9 @@ Risultati statistici:
     in [doe_importance_ss_pct_ttft_ms.png]), con picco a N50 (post-hoc Tukey/MWU-Holm N25 vs N50
     e N50 vs N100 sig.). TPOT, TPS e Jitter hanno ANOVA Type II non sig. (p = 0.131 / 0.129 / 0.132).
   - Baseline vs Stressor: 4/4 TTFT sig. (+8.86%..+9.45%, p99 = 42.17 ms a N50 visibile nella
-    coda rossa di [exceedance_1_minus_cdf_cpu_gpu.png]); nessuna degradazione su TPOT/Throughput.
+    coda rossa di [exceedance_1_minus_cdf_cpu_gpu.png]); nessuna degradazione su decode/jitter
+    (4/4 celle risultano sig. in senso migliorativo su TPOT -0.17%..-0.26% per l'effetto
+    task_index=12 descritto in Sez. 1.3 e su Jitter -0.45%..-0.56%).
   - Bottleneck: [slm-1b_gpu_mmlu_interrupt_bottleneck.png] mostra nel pannello `Parametri Sistema`
     una rampa lineare di `in` fino a >205.000/s; escursione termica minima nel pannello `Parametri Termici`.
 
@@ -408,14 +414,15 @@ Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitte
 Risultati statistici:
   - Effetti DoE e Post-Hoc: TTFT ANOVA Type II non sig. (p = 0.3447, imp = 4.25%). TPOT e TPS
     ANOVA Type II sig. (p = 0.0212 / 0.0388, imp = 11.92% / 10.37%), Jitter Kruskal-Wallis sig.
-    (p = 0.0212, imp = 14.69%), ma lo scarto massimo tra livelli (N25 vs N75) e' appena 0.0106
-    ms/tok (~10 microsecondi) su TPOT e < 0.007 ms su Jitter.
+    (p = 0.0212, imp = 14.69%; nessuna coppia sig. al post-hoc MWU-Holm, min p = 0.0996), ma lo
+    scarto massimo tra livelli (N25 vs N75) e' appena 0.0106 ms/tok (~10 microsecondi) su TPOT
+    e < 0.007 ms su Jitter.
   - Baseline vs Stressor: 4/4 TTFT sig. (+9.16%..+9.34%); **0/4 TPOT sig.** (MWU Holm p >= 0.11,
-    delta -0.04%..+0.09%); 1/4 TPS (N75 -0.11%); 3/4 Jitter (-0.77%..-0.33%).
-  - Bottleneck: [slm-1b_gpu_mmlu_os_bottleneck.png] evidenzia `cs` fino a >105.000/s nel pannello `Parametri Sistema`.
+    delta -0.04%..+0.09%); 1/4 TPS (N75 -0.11%); 3/4 Jitter (-0.77%..-0.33%, con N50 non sig.).
+  - Bottleneck: [slm-1b_gpu_mmlu_os_bottleneck.png] evidenzia `cs` fino a ~104.900/s nel pannello `Parametri Sistema`.
 
 Conclusioni su OS:
-  Nonostante >105.000 context switch/s, OS non degrada il TPOT rispetto alla baseline (0/4
+  Nonostante ~105.000 context switch/s, OS non degrada il TPOT rispetto alla baseline (0/4
   celle sig.) e aggiunge solo l'offset fisso sul TTFT (+9.2%).
 
 
@@ -471,7 +478,9 @@ Modello DoE, Analisi dei Residui e Normalita' (tabelle 2 e diagnostica Q-Q/Fitte
 Risultati statistici:
   - Effetti DoE e Post-Hoc: fattore N NON significativo su tutte le 4 metriche (p = 0.8777 /
     0.4032 / 0.4282 / Kruskal 0.1961; imp <= 4.41%), 0/24 coppie post-hoc significative.
-  - Baseline vs Stressor: 4/4 TTFT sig. (+8.81%..+8.88%); nessun degrado su decode/jitter.
+  - Baseline vs Stressor: 4/4 TTFT sig. (+8.81%..+8.88%); nessun degrado reale su
+    decode/jitter (4/4 celle risultano sig. in senso migliorativo su TPOT -0.18%..-0.23% per
+    l'effetto task_index=12 di Sez. 1.3 e su Jitter -0.97%..-1.03%).
   - Correlazioni & Bottleneck: debole Spearman `cs` vs TPOT (+0.2763, p = 0.0131); tutti i 6 pannelli
     in [slm-1b_gpu_mmlu_cache_bottleneck.png] risultano quasi sovrapponibili alla baseline.
 
@@ -487,8 +496,8 @@ SEZIONE 4: SINTESI FINALE SU GPU (SLM-1B MMLU, rep 1..20)
 1. Graduatoria di criticita' degli stressor su GPU (dalla piu' incisiva alla piu' blanda):
    1) MEM       : unico stressor che degrada sistematicamente tutte e 4 le metriche in 12/12
                   celle (TTFT +9.5..+10.1%, TPOT +0.36..+0.63% con p99 fino a 11.05 ms,
-                  Throughput -0.27..-0.50%, Jitter +0.75..+3.46%), per contesa sulla memoria
-                  unificata (UMA/LPDDR5).
+                  Throughput -0.27..-0.50%, Jitter +0.75..+3.46%; effetti significativi sia di N
+                  sia di S su TPOT e Throughput), per contesa sulla memoria unificata (UMA/LPDDR5).
    2) IO        : degrada monotonamente TPOT/Throughput/Jitter oltre N50 (+0.25..+0.29% a N100,
                   rilevato grazie a Kruskal-Wallis nonostante l'outlier z~15), ha le
                   correlazioni vmstat piu' forti (|rho| fino a 0.795) e p99 TPOT a 12.84 ms.
