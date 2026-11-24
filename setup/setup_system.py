@@ -224,36 +224,116 @@ def _generate_fallback_spider(count: int = 40) -> List[Dict[str, Any]]:
     return samples
 
 
+# ------------------------------------------------------------------------------
+# MMLU: 30 domande fisse, stratificate per macro-categoria
+# ------------------------------------------------------------------------------
+MMLU_DATASET_FILE = "mmlu_stratified_30.json"
+MMLU_N_QUESTIONS = 30
+MMLU_SEED = 42
+
+# Le 57 materie MMLU raggruppate nelle 4 macro-categorie ufficiali (Hendrycks et al., categories.py)
+MMLU_CATEGORIES: Dict[str, List[str]] = {
+    "STEM": [
+        "abstract_algebra", "astronomy", "college_biology", "college_chemistry",
+        "college_computer_science", "college_mathematics", "college_physics", "computer_security",
+        "conceptual_physics", "electrical_engineering", "elementary_mathematics", "high_school_biology",
+        "high_school_chemistry", "high_school_computer_science", "high_school_mathematics",
+        "high_school_physics", "high_school_statistics", "machine_learning",
+    ],
+    "humanities": [
+        "formal_logic", "high_school_european_history", "high_school_us_history",
+        "high_school_world_history", "international_law", "jurisprudence", "logical_fallacies",
+        "moral_disputes", "moral_scenarios", "philosophy", "prehistory", "professional_law",
+        "world_religions",
+    ],
+    "social_sciences": [
+        "econometrics", "high_school_geography", "high_school_government_and_politics",
+        "high_school_macroeconomics", "high_school_microeconomics", "high_school_psychology",
+        "human_sexuality", "professional_psychology", "public_relations", "security_studies",
+        "sociology", "us_foreign_policy",
+    ],
+    "other": [
+        "anatomy", "business_ethics", "clinical_knowledge", "college_medicine", "global_facts",
+        "human_aging", "management", "marketing", "medical_genetics", "miscellaneous", "nutrition",
+        "professional_accounting", "professional_medicine", "virology",
+    ],
+}
+
+
+def build_mmlu_stratified(n_questions: int = MMLU_N_QUESTIONS, seed: int = MMLU_SEED) -> List[Dict[str, Any]]:
+    """
+    Seleziona n_questions domande dal test set MMLU in modo uniforme tra le 4 macro-categorie
+    (30 -> 8 STEM, 8 other, 7 humanities, 7 social_sciences), ciascuna da una materia diversa.
+    Con seed fisso la selezione è deterministica: stessi prompt, nello stesso ordine, su ogni board
+    e in ogni esecuzione (baseline e stressor). Le categorie si alternano nell'ordine dei task.
+    Ogni campione ha 'id' (1..n), 'category', 'subject' e 'mmlu_test_index' (riga del test set).
+    """
+    import random
+    from datasets import load_dataset
+
+    ds = load_dataset("cais/mmlu", "all", split="test")
+    by_subject: Dict[str, List[int]] = {}
+    for idx, subj in enumerate(ds["subject"]):
+        by_subject.setdefault(subj, []).append(idx)
+
+    known = {s for subs in MMLU_CATEGORIES.values() for s in subs}
+    missing = sorted(known - set(by_subject))
+    if missing:
+        raise RuntimeError(f"Materie MMLU attese ma assenti nel dataset: {missing}")
+
+    rng = random.Random(seed)
+    cats = sorted(MMLU_CATEGORIES, key=lambda c: (-len(MMLU_CATEGORIES[c]), c))
+    quota = {c: n_questions // len(cats) for c in cats}
+    for c in cats[: n_questions % len(cats)]:
+        quota[c] += 1
+
+    picked: Dict[str, List[Dict[str, Any]]] = {}
+    for c in sorted(cats):
+        subjects = sorted(MMLU_CATEGORIES[c])
+        if quota[c] > len(subjects):
+            raise ValueError(f"Quota {quota[c]} > materie disponibili ({len(subjects)}) per {c}")
+        chosen = rng.sample(subjects, quota[c])
+        picked[c] = []
+        for subj in chosen:
+            row_idx = rng.choice(by_subject[subj])
+            row = dict(ds[row_idx])
+            row.update({"category": c, "mmlu_test_index": row_idx})
+            picked[c].append(row)
+
+    # Alternanza delle categorie nell'ordine dei task (round-robin)
+    ordered: List[Dict[str, Any]] = []
+    while any(picked.values()):
+        for c in cats:
+            if picked[c]:
+                ordered.append(picked[c].pop(0))
+    for i, row in enumerate(ordered, 1):
+        row["id"] = i
+    return ordered
+
+
 def check_and_download_datasets():
     """Verifica e crea i subset locali di MMLU e Spider (prime 40 richieste)."""
     print("\n=== 2. Verifica e Generazione Dataset (MMLU & Spider - 40 campioni) ===")
     from datasets import load_dataset
 
-    mmlu_path = DATASETS_DIR / "mmlu_first_40.json"
+    mmlu_path = DATASETS_DIR / MMLU_DATASET_FILE
     spider_path = DATASETS_DIR / "spider_first_40.json"
 
-    # 1. Dataset MMLU (Prefill-heavy / Compute-bound)
+    # 1. Dataset MMLU (Prefill-heavy / Compute-bound): 30 domande stratificate per macro-categoria.
+    # Niente fallback con domande finte: un dataset sintetico renderebbe inutilizzabile l'analisi
+    # di qualità, quindi se il download fallisce lo script si ferma con l'errore.
     if mmlu_path.exists() and mmlu_path.stat().st_size > 100:
-        print(f"[OK] Dataset MMLU (40 campioni) già presente: {mmlu_path}")
+        print(f"[OK] Dataset MMLU ({MMLU_N_QUESTIONS} domande stratificate) già presente: {mmlu_path}")
     else:
-        print("[DOWNLOAD] Generazione subset MMLU (prime 40 richieste)...")
+        print(f"[DOWNLOAD] Generazione subset MMLU ({MMLU_N_QUESTIONS} domande stratificate per categoria, seed {MMLU_SEED})...")
         try:
-            mmlu_dataset = load_dataset("cais/mmlu", "all", split="test", streaming=True)
-            mmlu_subset = list(mmlu_dataset.take(40))
-            if len(mmlu_subset) < 40:
-                raise RuntimeError(f"Ricevuti solo {len(mmlu_subset)} campioni MMLU (< 40).")
+            mmlu_subset = build_mmlu_stratified()
             _save_json_atomic(mmlu_path, mmlu_subset)
             print(f"[OK] Dataset MMLU salvato in: {mmlu_path}")
         except Exception as e:
             log_error("download_dataset_mmlu", e)
-            print(f"[FALLBACK] Errore download MMLU da HuggingFace ({e}). Generazione dataset MMLU locale di fallback (40 campioni)...")
-            try:
-                _save_json_atomic(mmlu_path, _generate_fallback_mmlu(40))
-                print(f"[OK] Dataset MMLU di fallback salvato in: {mmlu_path}")
-            except Exception as e2:
-                log_error("fallback_dataset_mmlu", e2)
-                print(f"[ERRORE CRITICO] Impossibile salvare il dataset MMLU: {e2}")
-                sys.exit(1)
+            print(f"[ERRORE CRITICO] Impossibile generare il dataset MMLU stratificato: {e}")
+            sys.exit(1)
 
     # 2. Dataset Spider (Decode-heavy / Memory-bound)
     if spider_path.exists() and spider_path.stat().st_size > 100:

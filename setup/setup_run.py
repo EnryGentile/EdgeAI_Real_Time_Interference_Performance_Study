@@ -82,7 +82,7 @@ KNOWN_BENCHMARKS = {
     "mmlu": {
         "name": "MMLU",
         "type": "Prefill-heavy (Compute-bound)",
-        "file": "mmlu_first_40.json",
+        "file": "mmlu_stratified_30.json",  # 30 domande fisse stratificate (setup_system.build_mmlu_stratified)
         "fallback_file": "mmlu.json",
         "default_max_tokens": 64,
         "description": "Massive Multitask Language Understanding (Multiple Choice QA)"
@@ -410,11 +410,18 @@ def check_system_prerequisites(
         else:
             print(f" [FALLBACK] Dataset '{dataset_file}' assente. Tentativo di generazione automatica di fallback...")
             try:
-                from setup_system import _generate_fallback_mmlu, _generate_fallback_spider, _save_json_atomic
+                from setup_system import build_mmlu_stratified, _generate_fallback_spider, _save_json_atomic
                 DATASETS_DIR.mkdir(parents=True, exist_ok=True)
-                fallback_data = _generate_fallback_mmlu(40) if benchmark_key == "mmlu" else _generate_fallback_spider(40)
+                if benchmark_key == "mmlu":
+                    # Dataset reale (30 domande stratificate), mai domande sintetiche: se il download
+                    # fallisce l'eccezione porta all'errore sotto e la run non parte.
+                    fallback_data = build_mmlu_stratified()
+                    msg = f"Generato dataset MMLU stratificato in {dataset_path} ({len(fallback_data)} domande)."
+                else:
+                    fallback_data = _generate_fallback_spider(40)
+                    msg = f"Generato dataset locale di fallback in {dataset_path} (40 campioni)."
                 _save_json_atomic(dataset_path, fallback_data)
-                warnings.append(f"Generato dataset locale di fallback in {dataset_path} (40 campioni).")
+                warnings.append(msg)
             except Exception as e:
                 log_runtime_error("dataset_auto_fallback", e)
                 errors.append(

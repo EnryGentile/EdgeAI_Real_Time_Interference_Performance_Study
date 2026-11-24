@@ -1,0 +1,43 @@
+task_index,sample_id,exp_id,model_id,device,benchmark,stressor_class,stressor_method,num_workers,size,duration,repetition,prompt_tokens,output_tokens,ttft_ms,prompt_ms_per_tok,per_token_lat_ms,throughput_tok_s,jitter_ms,task_duration_s,ground_truth,model_response,vmstat_r,vmstat_b,vmstat_swpd_kb,vmstat_free_kb,vmstat_buff_kb,vmstat_cache_kb,vmstat_si,vmstat_so,vmstat_bi,vmstat_bo,vmstat_in,vmstat_cs,vmstat_us,vmstat_sy,vmstat_id,vmstat_wa,vmstat_st,vmstat_cpu_temp_c,vmstat_gpu_temp_c,vmstat_throttled
+1,1,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,324,9,277.2988,0.8568,24.1546,41.4,15.3277,0.519,SELECT count(*) FROM singer,"```sql
+SELECT COUNT(*) FROM singer;
+```",0.0,0.0,0.0,5442068.0,5572.0,523508.0,0.0,0.0,742.0,6.0,149.0,203.0,1.0,1.0,96.0,2.0,0.0,42.94,43.03,0.0
+2,2,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,26,8,62.2692,2.3719,24.2718,41.2,3.146,0.2564,SELECT count(*) FROM singer,SELECT COUNT(Singer_ID) FROM singer,0.0,0.0,0.0,5439576.0,5584.0,523832.0,0.0,0.0,232.0,0.0,1004.0,1102.0,1.0,1.0,98.0,0.0,0.0,43.28,43.5,0.0
+3,3,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,38,21,71.1942,1.8692,21.5517,46.4,18.2543,0.7606,"SELECT name ,  country ,  age FROM singer ORDER BY age DESC","```sql
+SELECT 
+  s.Name,
+  s.Country,
+  s.Age
+FROM 
+  singer s
+ORDER BY 
+  s.Age DESC;
+```",0.0,0.0,0.0,5438820.0,5584.0,523832.0,0.0,0.0,0.0,0.0,890.0,1018.0,1.0,1.0,98.0,0.0,0.0,43.86,44.47,0.0
+4,4,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,38,21,55.372,1.4499,19.8807,50.3,8.2084,0.5323,"SELECT name ,  country ,  age FROM singer ORDER BY age DESC","```sql
+SELECT s.Name, s.Country, s.Age
+FROM singer s
+ORDER BY s.Age DESC;
+```",0.0,0.0,0.0,5438064.0,5584.0,523832.0,0.0,0.0,0.0,0.0,1029.0,1113.0,1.0,1.0,98.0,0.0,0.0,44.03,44.53,0.0
+5,5,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,35,35,54.998,1.5845,18.7617,53.3,7.5787,0.7688,"SELECT avg(age) ,  min(age) ,  max(age) FROM singer WHERE country  =  'France'","```sql
+SELECT AVG(Age) AS avg_age, MIN(Age) AS min_age, MAX(Age) AS max_age
+FROM singer
+WHERE Country = 'France';
+```",0.0,0.0,0.0,5438064.0,5584.0,523832.0,0.0,0.0,0.0,0.0,901.0,1067.0,1.0,1.0,98.0,0.0,0.0,44.36,45.16,0.0
+6,6,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,24,35,50.0756,2.1186,18.7617,53.3,7.2055,0.7624,"SELECT avg(age) ,  min(age) ,  max(age) FROM singer WHERE country  =  'France'","```sql
+SELECT AVG(Age) AS avg_age, MIN(Age) AS min_age, MAX(Age) AS max_age
+FROM singer
+WHERE Country = 'France';
+```",0.0,0.0,0.0,5438064.0,5584.0,523832.0,0.0,0.0,0.0,4.0,948.0,1105.0,1.0,1.0,98.0,0.0,0.0,44.43,45.38,0.0
+7,7,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,35,46,51.5238,1.4689,18.2149,54.9,5.4257,0.9625,"SELECT song_name ,  song_release_year FROM singer ORDER BY age LIMIT 1","```sql
+SELECT T2.Name, T2.Song_release_year
+FROM singer_in_concert
+JOIN singer ON T2.Singer_ID = singer.Singer_ID
+WHERE T2.Age = (SELECT MIN(Age) FROM singer);
+```",0.0,0.0,0.0,5438064.0,5592.0,523832.0,0.0,0.0,0.0,16.0,1176.0,1360.0,1.0,1.0,98.0,0.0,0.0,44.6,45.09,0.0
+8,8,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,37,53,46.8054,1.2778,17.8253,56.1,0.3271,0.9914,"SELECT song_name ,  song_release_year FROM singer ORDER BY age LIMIT 1","SELECT T2.Song_Name, T2.Song_release_year FROM singer AS T1 INNER JOIN singer_in_concert AS T2 ON T1.Singer_ID = T2.Singer_ID WHERE T1.Age = ( SELECT MIN(Age) FROM singer )",0.0,0.0,0.0,5437308.0,5592.0,523832.0,0.0,0.0,0.0,0.0,1112.0,1329.0,2.0,1.0,98.0,0.0,0.0,45.47,46.19,0.0
+9,9,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,32,12,46.4612,1.4505,18.3824,54.4,12.6944,0.3588,SELECT DISTINCT country FROM singer WHERE age  >  20,"```sql
+SELECT DISTINCT Country
+FROM singer
+WHERE Age > 20;
+```",0.0,0.0,0.0,5437308.0,5592.0,523832.0,0.0,0.0,0.0,0.0,1112.0,1329.0,2.0,1.0,98.0,0.0,0.0,45.47,46.19,0.0
+10,10,baseline_slm-1b_gpu_spider_rep1,SLM-1B,gpu,Spider,none,none,0% N_tot,N/A,baseline,1,31,7,52.1984,1.71,18.6916,53.5,15.8293,0.2207,SELECT DISTINCT country FROM singer WHERE age  >  20,SELECT Country FROM singer WHERE Age > 20,0.0,0.0,0.0,5437056.0,5592.0,523848.0,0.0,0.0,0.0,0.0,1075.0,1148.0,1.0,1.0,98.0,0.0,0.0,45.26,45.72,0.0

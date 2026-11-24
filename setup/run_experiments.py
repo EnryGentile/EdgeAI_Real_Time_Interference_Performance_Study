@@ -58,6 +58,11 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 MASTER_SUMMARY_CSV = PROJECT_ROOT / "master_experiment_summary.csv"
 FALLBACK_ERROR_LOG = RESULTS_DIR / "runtime_error_fallback.log"
 STRESS_TMP_DIR = Path("/tmp/edgeai_stress_ng_tmp") if os.name != "nt" else (PROJECT_ROOT / "tmp_stress")
+STRESS_LOG_DIR = RESULTS_DIR / "stress_ng_logs"
+# Secondi di attesa tra l'avvio di stress-ng e il caricamento del modello (override: "stress_warmup_sec" in run_config.json)
+STRESS_WARMUP_SEC = 10
+# True mentre uno stressor persistente è in esecuzione: le pulizie di routine non devono ucciderlo
+_PERSISTENT_STRESSOR_ACTIVE = False
 
 # Livelli del Piano Fattoriale (DoE)
 # I fattori sperimentali sono esclusivamente:
@@ -408,6 +413,22 @@ def get_total_ram_mb() -> int:
     return 16384
 
 
+_STRESSOR_SUPPORT_CACHE: Dict[str, bool] = {}
+
+
+def _stress_ng_supports(stressor: str) -> bool:
+    """True se la versione installata di stress-ng elenca lo stressor in '--stressors'."""
+    if stressor not in _STRESSOR_SUPPORT_CACHE:
+        try:
+            res = subprocess.run(["stress-ng", "--stressors"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, timeout=10)
+            names = res.stdout.decode("utf-8", errors="replace").split()
+            _STRESSOR_SUPPORT_CACHE[stressor] = stressor in names
+        except Exception:
+            _STRESSOR_SUPPORT_CACHE[stressor] = False
+    return _STRESSOR_SUPPORT_CACHE[stressor]
+
+
 def build_stress_ng_cmd(
     stressor_class: str,
     stressor_method: Optional[str] = None,
@@ -421,6 +442,8 @@ def build_stress_ng_cmd(
     applicati con lo stesso valore per tutti i metodi della famiglia.
     """
     workers = max(1, int(round(total_cores * n_fraction)))
+    # La cartella viene (ri)creata anche da PersistentStressor.start(): cleanup_orphan_stressors la cancella
+    # e stress-ng 0.13 abortisce se --temp-path non esiste (causa del vecchio bug "stressor solo sul task 1").
     STRESS_TMP_DIR.mkdir(parents=True, exist_ok=True)
     cmd = ["stress-ng", "--metrics-brief", "--temp-path", str(STRESS_TMP_DIR)]
 
@@ -440,12 +463,13 @@ def build_stress_ng_cmd(
 
     s_frac = s_fraction if s_fraction is not None else 0.50
 
-    # 1. CPU (cpu, matrix, fft eseguiti simultaneamente)
+    # 1. CPU (cpu e matrix eseguiti simultaneamente).
+    # In stress-ng 0.13.x '--fft' non esiste come stressor (è solo un metodo di --cpu): il metodo
+    # predefinito di --cpu ("all") include già fft, quindi non serve un'opzione separata.
     if s_clean_class == "cpu":
         cmd += [
             "--cpu", str(workers),
-            "--matrix", str(workers),
-            "--fft", str(workers)
+            "--matrix", str(workers)
         ]
 
     # 2. MEMORIA (vm, stream, mem_rate con fattore S applicato all'allocazione memoria)
@@ -460,13 +484,14 @@ def build_stress_ng_cmd(
             "--memrate", str(workers)
         ]
 
-    # 3. CACHE (cache, l1-cache, llc-affinity se livelli > 2)
+    # 3. CACHE (cache e l1cache). '--llc-affinity' non esiste in stress-ng 0.13.x (installato
+    # sulle board) e faceva fallire l'intero comando: viene aggiunto solo se la versione lo supporta.
     elif s_clean_class == "cache":
         cmd += [
             "--cache", str(workers),
             "--l1cache", str(workers)
         ]
-        if get_cpu_cache_levels() > 2:
+        if get_cpu_cache_levels() > 2 and _stress_ng_supports("llc-affinity"):
             cmd += ["--llc-affinity", str(workers)]
 
     # 4. I/O (iomix, hdd eseguiti simultaneamente con lo stesso S)
@@ -522,8 +547,14 @@ def stop_process_tree(proc: Optional[subprocess.Popen]):
             pass
 
 
-def cleanup_orphan_stressors():
-    """Uccide eventuali worker stress-ng rimasti appesi e pulisce la cartella temporanea I/O."""
+def cleanup_orphan_stressors(force: bool = False):
+    """
+    Uccide eventuali worker stress-ng rimasti appesi e pulisce la cartella temporanea I/O.
+    Se è attivo uno stressor persistente (PersistentStressor) non fa nulla, a meno di force=True:
+    altrimenti la pulizia tra un task e l'altro ucciderebbe lo stressor dell'esperimento.
+    """
+    if _PERSISTENT_STRESSOR_ACTIVE and not force:
+        return
     try:
         if os.name != "nt" and shutil.which("pkill"):
             subprocess.run(["pkill", "-9", "-f", "stress-ng"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
@@ -531,6 +562,131 @@ def cleanup_orphan_stressors():
             shutil.rmtree(STRESS_TMP_DIR, ignore_errors=True)
     except Exception:
         pass
+
+
+class StressorError(ExperimentRuntimeError):
+    """stress-ng non è partito o è terminato mentre l'esperimento era in corso."""
+    pass
+
+
+def _tail_text(path: Path, max_chars: int = 2000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-max_chars:].strip()
+    except Exception:
+        return "(log stress-ng non leggibile)"
+
+
+class PersistentStressor:
+    """
+    Stressor attivo per tutto l'esperimento (modalità t_tot):
+      - parte PRIMA del caricamento del modello e attende un warm-up, così i worker sono a regime
+        già dal primo task;
+      - resta acceso per tutti i task e viene fermato solo a fine esperimento;
+      - l'output di stress-ng va in un log per esperimento (non più su DEVNULL) e check() solleva
+        StressorError se il processo è terminato, così un comando sbagliato non passa inosservato.
+    """
+
+    def __init__(self, cmd: List[str], exp_id: str):
+        self.cmd = list(cmd)
+        self.exp_id = exp_id
+        self.log_path = STRESS_LOG_DIR / f"{exp_id}_stress_ng.log"
+        self.proc: Optional[subprocess.Popen] = None
+        self._log_f = None
+
+    def start(self, warmup_sec: float):
+        global _PERSISTENT_STRESSOR_ACTIVE
+        cleanup_orphan_stressors(force=True)
+        STRESS_TMP_DIR.mkdir(parents=True, exist_ok=True)
+        STRESS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._log_f = open(self.log_path, "w", encoding="utf-8")
+        self._log_f.write(f"# cmd: {' '.join(self.cmd)}\n")
+        self._log_f.flush()
+        preexec = os.setsid if os.name != "nt" else None
+        try:
+            self.proc = subprocess.Popen(
+                self.cmd,
+                stdout=self._log_f,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                preexec_fn=preexec
+            )
+        except Exception as e:
+            self._close_log()
+            raise StressorError(f"Impossibile avviare stress-ng ({' '.join(self.cmd)}): {e}") from e
+        _PERSISTENT_STRESSOR_ACTIVE = True
+        print(f" [STRESSOR] stress-ng avviato (pid {self.proc.pid}), warm-up {warmup_sec:.0f}s prima del caricamento del modello...")
+        time.sleep(max(0.0, warmup_sec))
+        self.check("warm-up")
+        print(" [STRESSOR] Warm-up completato, stress-ng attivo.")
+
+    def check(self, where: str):
+        """Solleva StressorError se stress-ng non è più in esecuzione."""
+        if self.proc is None:
+            raise StressorError(f"stress-ng non avviato ({where}).")
+        rc = self.proc.poll()
+        if rc is not None:
+            self._close_log()
+            raise StressorError(
+                f"stress-ng terminato durante '{where}' con codice {rc} "
+                f"(comando: {' '.join(self.cmd)}). Ultime righe del log {self.log_path}:\n"
+                f"{_tail_text(self.log_path)}"
+            )
+
+    def stop(self):
+        global _PERSISTENT_STRESSOR_ACTIVE
+        _PERSISTENT_STRESSOR_ACTIVE = False
+        stop_process_tree(self.proc)
+        self.proc = None
+        self._close_log()
+        cleanup_orphan_stressors(force=True)
+
+    def _close_log(self):
+        try:
+            if self._log_f is not None:
+                self._log_f.close()
+        except Exception:
+            pass
+        self._log_f = None
+
+
+def preflight_stressor_check(queue: List[Dict[str, Any]], total_cores: int, seconds: int = 2):
+    """
+    Controllo preliminare a inizio campagna: lancia per pochi secondi il comando stress-ng di ogni
+    famiglia presente tra gli esperimenti pending e verifica che termini con codice 0.
+    Se una famiglia fallisce (opzione non riconosciuta, temp-path non scrivibile, ...) la campagna
+    non parte e viene mostrato l'errore di stress-ng.
+    """
+    families = []
+    for e in queue:
+        if e.get("status") == "pending" and e.get("mode") == "stressor" and e["stressor_class"] not in families:
+            families.append(e["stressor_class"])
+    if not families:
+        return
+    if shutil.which("stress-ng") is None:
+        raise StressorError("Il binario 'stress-ng' non è installato ma la coda contiene esperimenti con stressor.")
+
+    print("\n [PREFLIGHT] Verifica dei comandi stress-ng per le famiglie: " + ", ".join(families))
+    failures = []
+    for fam in families:
+        cmd = build_stress_ng_cmd(fam, n_fraction=0.25, s_fraction=0.25, total_cores=total_cores)
+        cmd += ["--timeout", f"{seconds}s"]
+        try:
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 stdin=subprocess.DEVNULL, timeout=seconds + 60)
+            out = res.stdout.decode("utf-8", errors="replace").strip()
+            rc = res.returncode
+        except subprocess.TimeoutExpired:
+            out, rc = "timeout del controllo preliminare", -1
+        finally:
+            cleanup_orphan_stressors(force=True)
+        status = "OK" if rc == 0 else f"ERRORE (codice {rc})"
+        print(f"   - {fam:10s}: {status}")
+        if rc != 0:
+            failures.append(f"[{fam}] {' '.join(cmd)}\n{out[-1500:]}")
+
+    if failures:
+        raise StressorError("Controllo preliminare stress-ng fallito:\n" + "\n\n".join(failures))
+    print(" [PREFLIGHT] Tutti i comandi stress-ng funzionano.")
 
 
 def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = True):
@@ -548,7 +704,9 @@ def reclaim_unified_memory(model_path: Optional[str] = None, kill_llama: bool = 
             if os.name != "nt" and shutil.which("pkill"):
                 subprocess.run(["pkill", "-9", "-f", "llama-cli"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 subprocess.run(["pkill", "-9", "-f", "llama-server"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                subprocess.run(["pkill", "-9", "-f", "stress-ng"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+                # Lo stressor persistente dell'esperimento deve sopravvivere al (ri)caricamento del modello
+                if not _PERSISTENT_STRESSOR_ACTIVE:
+                    subprocess.run(["pkill", "-9", "-f", "stress-ng"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
                 time.sleep(0.5)
         except Exception:
             pass
@@ -2016,7 +2174,7 @@ def trigger_emergency_fallback(
             monitor.stop()
         except Exception:
             pass
-    cleanup_orphan_stressors()
+    cleanup_orphan_stressors(force=True)
 
     # 2. Scrittura nel log degli errori
     log_fallback_error("trigger_emergency_fallback", exc, exp_id=exp_id)
@@ -2024,6 +2182,9 @@ def trigger_emergency_fallback(
     fallback_files: List[Tuple[Path, str]] = []
     if FALLBACK_ERROR_LOG.exists():
         fallback_files.append((FALLBACK_ERROR_LOG, "results"))
+    stress_log = STRESS_LOG_DIR / f"{exp_id}_stress_ng.log"
+    if stress_log.exists():
+        fallback_files.append((stress_log, "results/stress_ng_logs"))
 
     # 3. Salvataggio serie temporale vmstat parziale
     if monitor is not None and monitor.samples:
@@ -2095,6 +2256,7 @@ def execute_experiment(
     """Esegue tutti i sample_count task previsti per l'esperimento corrente con protezione try/except."""
     monitor: Optional[SystemMonitor] = None
     llama_session: Optional[LlamaPersistentSession] = None
+    stressor: Optional[PersistentStressor] = None
     task_records: List[Dict[str, Any]] = []
     responses_log: List[Dict[str, Any]] = []
 
@@ -2133,12 +2295,22 @@ def execute_experiment(
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
+        # Stressor persistente (t_tot): parte prima del modello, warm-up, resta attivo per tutti i task.
+        # Le modalità t_prefill / t_decode mantengono l'avvio per singolo task dentro run_task.
+        task_stress_cmd = stress_cmd
+        if stress_cmd and exp["duration"] == "t_tot":
+            stressor = PersistentStressor(stress_cmd, exp["exp_id"])
+            stressor.start(float(config.get("stress_warmup_sec", STRESS_WARMUP_SEC)))
+            task_stress_cmd = None
+
         print("\n [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
         t_load_0 = time.perf_counter()
         llama_session = LlamaPersistentSession(config)
         llama_session.start()
         t_load_sec = time.perf_counter() - t_load_0
         print(f" [OK] Modello GGUF allocato in {t_load_sec:.1f}s. Tra un task e il successivo verrà resettata solo la KV cache (/clear).")
+        if stressor is not None:
+            stressor.check("caricamento del modello")
 
         monitor = SystemMonitor()
         monitor.start()
@@ -2158,11 +2330,14 @@ def execute_experiment(
             else:
                 ground_truth = str(sample_item.get("query", ""))
 
+            if stressor is not None:
+                stressor.check(f"prima del task {i + 1}")
+
             print(f" -> Task [{i + 1:02d}/{n_samples:02d}] in esecuzione...", end="", flush=True)
             metrics = run_single_llama_task(
                 config=config,
                 prompt=prompt,
-                stress_cmd=stress_cmd,
+                stress_cmd=task_stress_cmd,
                 duration_mode=exp["duration"],
                 task_timeout_sec=task_timeout_sec,
                 exp_id=exp["exp_id"],
@@ -2228,12 +2403,19 @@ def execute_experiment(
             )
 
             time.sleep(0.3)
-            cleanup_orphan_stressors()
+            if stressor is None:
+                cleanup_orphan_stressors()
+
+        if stressor is not None:
+            stressor.check("fine dell'ultimo task")
 
         if llama_session is not None:
             llama_session.close()
             llama_session = None
         monitor.stop()
+        if stressor is not None:
+            stressor.stop()
+            stressor = None
         cleanup_orphan_stressors()
 
         # 1. Salvataggio Time-Series vmstat (1 Hz)
@@ -2313,6 +2495,9 @@ def execute_experiment(
             generated_files.append((tasks_rep_csv_path, "results"))
         if alt_tasks_path is not None and alt_tasks_path.exists():
             generated_files.append((alt_tasks_path, "results"))
+        stress_log = STRESS_LOG_DIR / f"{exp['exp_id']}_stress_ng.log"
+        if stress_log.exists():
+            generated_files.append((stress_log, "results/stress_ng_logs"))
 
         if task_records:
             mean_ttft = round(statistics.mean(r["ttft_ms"] for r in task_records), 4)
@@ -2387,6 +2572,11 @@ def execute_experiment(
         return generated_files
 
     except BaseException as exc:
+        if stressor is not None:
+            try:
+                stressor.stop()
+            except Exception:
+                pass
         if llama_session is not None:
             try:
                 llama_session.close()
@@ -2620,6 +2810,16 @@ def main():
         # Pulizia immediata preventiva all'avvio della sessione
         reclaim_unified_memory(config.get("model_path"), kill_llama=True)
 
+        # Controllo preliminare: ogni famiglia di stressor in coda deve partire correttamente,
+        # altrimenti la campagna non inizia (evita ore di run senza carico reale).
+        try:
+            preflight_stressor_check(queue, total_cores=os.cpu_count() or int(config.get("n_threads", 4)))
+        except StressorError as pre_err:
+            log_fallback_error("preflight_stressor_check", pre_err)
+            print(f"\n [ERRORE PREFLIGHT] {pre_err}")
+            print(f" Campagna NON avviata. Dettagli in: {FALLBACK_ERROR_LOG}\n")
+            sys.exit(1)
+
         while pending:
             next_exp = pending[0]
 
@@ -2661,7 +2861,7 @@ def main():
     except SystemExit:
         raise
     except BaseException as fatal_exc:
-        cleanup_orphan_stressors()
+        cleanup_orphan_stressors(force=True)
         log_fallback_error("main_top_level", fatal_exc)
         print(f"\n[ERRORE FATALE] {fatal_exc}. Processo arrestato in sicurezza. Log in: {FALLBACK_ERROR_LOG}")
         sys.exit(1)
