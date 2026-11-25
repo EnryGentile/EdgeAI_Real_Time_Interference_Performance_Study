@@ -1,0 +1,38 @@
+
+[2026-11-23 20:40:59] === ERRORE RUNTIME & FALLBACK | Exp: run_llm-8b_cpu_mmlu_mem_N50_t_tot_S75_rep6 | Contesto: run_single_llama_task_error ===
+Traceback (most recent call last):
+  File "/home/king/EdgeAI_Real_Time_Interference_Performance_Study/setup/run_experiments.py", line 1486, in run_single_llama_task
+    return session.run_task(
+  File "/home/king/EdgeAI_Real_Time_Interference_Performance_Study/setup/run_experiments.py", line 1051, in run_task
+    raise RuntimeError(
+RuntimeError: llama-cli terminato inaspettatamente durante il task (codice -6). Dettagli: NvMapMemAllocInternalTagged: 1075072515 error 12
+NvMapMemHandleAlloc: error 0
+NvMapMemAllocInternalTagged: 1075072515 error 12
+NvMapMemHandleAlloc: error 0
+1.01.009.758 E CUDA error: out of memory
+/home/king/EdgeAI_Real_Time_Interference_Performance_Study/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:112: CUDA error
+1.01.031.996 E   current device: 0, in function ggml_cuda_flash_attn_ext_mma_f16_case at /home/king/EdgeAI_Real_Time_Interference_Performance_Study/llama.cpp/ggml/src/ggml-cuda/template-instances/../fattn-mma-f16.cuh:2096
+1.01.032.024 E   cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total)
+41	../sysdeps/unix/sysv/linux/poll.c: No such file or directory.
+58	../sysdeps/nptl/libc_start_call_main.h: No such file or directory.
+392	../csu/libc-start.c: No such file or directory.
+
+
+[2026-11-24 08:26:03] === ERRORE RUNTIME & FALLBACK | Exp: run_llm-8b_cpu_mmlu_mem_N100_t_tot_S50_rep14 | Contesto: run_single_llama_task_error ===
+Traceback (most recent call last):
+  File "/home/king/EdgeAI_Real_Time_Interference_Performance_Study/setup/run_experiments.py", line 1486, in run_single_llama_task
+    return session.run_task(
+  File "/home/king/EdgeAI_Real_Time_Interference_Performance_Study/setup/run_experiments.py", line 1051, in run_task
+    raise RuntimeError(
+RuntimeError: llama-cli terminato inaspettatamente durante il task (codice -6). Dettagli: NvMapMemAllocInternalTagged: 1075072515 error 12
+NvMapMemHandleAlloc: error 0
+NvMapMemAllocInternalTagged: 1075072515 error 12
+NvMapMemHandleAlloc: error 0
+1.01.366.603 E CUDA error: out of memory
+1.01.384.598 E   current device: 0, in function ggml_cuda_flash_attn_ext_mma_f16_case at /home/king/EdgeAI_Real_Time_Interference_Performance_Study/llama.cpp/ggml/src/ggml-cuda/template-instances/../fattn-mma-f16.cuh:2096
+1.01.384.625 E   cudaFuncSetAttribute(reinterpret_cast<fattn_kernel_ptr_t>(fattn_kernel), cudaFuncAttributeMaxDynamicSharedMemorySize, nbytes_shared_total)
+/home/king/EdgeAI_Real_Time_Interference_Performance_Study/llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu:112: CUDA error
+41	../sysdeps/unix/sysv/linux/poll.c: No such file or directory.
+58	../sysdeps/nptl/libc_start_call_main.h: No such file or directory.
+392	../csu/libc-start.c: No such file or directory.
+
