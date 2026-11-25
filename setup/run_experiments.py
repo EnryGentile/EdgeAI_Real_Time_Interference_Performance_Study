@@ -813,7 +813,11 @@ def clean_llama_response(raw_text: str, prompt: str) -> str:
             content_lines.append(line)
         text = "\n".join(content_lines)
 
-    # 3. Rimuove l'echo del prompt (sia multi-linea che single-line) o del comando /clear
+    # 3. Rimuove l'echo del prompt (sia multi-linea che single-line) o del comando /clear.
+    # Nell'eco llama-cli stampa ogni '/' del prompt come '///' (es. "a/an" -> "a///an"):
+    # senza normalizzarlo l'eco non viene riconosciuto e la risposta inizia con "Question: ...".
+    if "/" in prompt and "///" in text:
+        text = text.replace("///", "/")
     clean_p = prompt.strip()
     single_p = " ".join(l.strip() for l in prompt.splitlines() if l.strip())
     for candidate_p in (clean_p, single_p):
@@ -2595,6 +2599,228 @@ def execute_experiment(
 
 
 # ==============================================================================
+# SMOKE TEST (verifica rapida della board prima di una campagna)
+# ==============================================================================
+SMOKE_DEFAULT_TASKS = 2
+SMOKE_ROOT = PROJECT_ROOT / "smoke_test"
+
+
+def _redirect_outputs_for_smoke(out_dir: Path):
+    """Dirotta checkpoint, risultati, serie temporali e log verso out_dir (nessun file della campagna viene toccato)."""
+    global RESULTS_DIR, TIMESERIES_DIR, MASTER_SUMMARY_CSV, FALLBACK_ERROR_LOG
+    global STRESS_LOG_DIR, STATE_FILE_PATH, STATE_BACKUP_PATH
+    RESULTS_DIR = out_dir / "results"
+    TIMESERIES_DIR = out_dir / "data_timeseries"
+    MASTER_SUMMARY_CSV = out_dir / "master_experiment_summary.csv"
+    FALLBACK_ERROR_LOG = RESULTS_DIR / "runtime_error_fallback.log"
+    STRESS_LOG_DIR = RESULTS_DIR / "stress_ng_logs"
+    STATE_FILE_PATH = out_dir / "smoke_state.json"
+    STATE_BACKUP_PATH = out_dir / "smoke_state.json.bak"
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    TIMESERIES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _smoke_campaign_service_active() -> bool:
+    """True se il servizio di avvio automatico sta eseguendo una run (lo smoke test la disturberebbe)."""
+    if os.name == "nt" or shutil.which("systemctl") is None:
+        return False
+    for svc in ("edgeai-doe.service", "edgeai-mmlu.service"):
+        try:
+            res = subprocess.run(["systemctl", "is-active", "--quiet", svc], timeout=10)
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _smoke_build_queue(config: Dict[str, Any], args) -> List[Dict[str, Any]]:
+    """Baseline + per ogni famiglia di stressor la run più pesante (N100 e, per mem/io, S75)."""
+    base_cfg = dict(config, repetitions=1, use_stressor=False, stressor_class="none")
+    queue = build_experiment_queue(base_cfg)
+    for e in queue:
+        e["exp_id"] = "smoke_" + e["exp_id"]
+
+    if args.use_stressor is False:
+        return queue
+    stressor_sel = "all-stressor"
+    if not args.all_stressor and args.stressor:
+        if args.stressor.strip().lower() in ("none", "baseline", "off", "false"):
+            return queue
+        stressor_sel = args.stressor
+
+    stress_cfg = dict(config, repetitions=1, use_stressor=True, stressor_class=stressor_sel)
+    best: Dict[str, Dict[str, Any]] = {}
+    for e in build_experiment_queue(stress_cfg):
+        key = (e["n_fraction"] or 0.0, e["s_fraction"] or 0.0)
+        cur = best.get(e["stressor_class"])
+        if cur is None or key > (cur["n_fraction"] or 0.0, cur["s_fraction"] or 0.0):
+            best[e["stressor_class"]] = e
+    for fam in STRESSOR_FAMILY_ORDER:
+        if fam in best:
+            e = best[fam]
+            e["exp_id"] = "smoke_" + e["exp_id"]
+            queue.append(e)
+    return queue
+
+
+def _smoke_read_tasks(generated_files: List[Tuple[Path, str]], exp_id: str) -> List[Dict[str, Any]]:
+    for path, _ in generated_files:
+        if path.name.endswith("_tasks.csv") and path.exists():
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                rows = [r for r in csv.DictReader(f) if r.get("exp_id") == exp_id]
+            if rows:
+                return rows
+    return []
+
+
+def _smoke_f(row: Dict[str, Any], key: str) -> float:
+    try:
+        return float(row.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _smoke_load_signature(row: Dict[str, Any]) -> Dict[str, float]:
+    return {
+        "r": _smoke_f(row, "vmstat_r"),
+        "cpu": _smoke_f(row, "vmstat_us") + _smoke_f(row, "vmstat_sy"),
+        "wa": _smoke_f(row, "vmstat_wa"),
+        "cs": _smoke_f(row, "vmstat_cs"),
+        "in": _smoke_f(row, "vmstat_in"),
+    }
+
+
+def _smoke_task_loaded(sig: Dict[str, float], base: Dict[str, float]) -> bool:
+    """Un task è 'sotto carico' se almeno un indicatore vmstat è chiaramente sopra la baseline."""
+    return (
+        sig["r"] >= base["r"] + 1.0
+        or sig["cpu"] >= base["cpu"] + 10.0
+        or sig["wa"] >= base["wa"] + 5.0
+        or sig["cs"] >= base["cs"] * 1.5 + 500
+        or sig["in"] >= base["in"] * 1.5 + 500
+    )
+
+
+def run_smoke_test(config: Dict[str, Any], args) -> bool:
+    """
+    Verifica rapida end-to-end sulla board: preflight stress-ng, caricamento modello, task llama.cpp,
+    stressor persistente attivo su TUTTI i task (confronto vmstat con la baseline), scrittura dei file.
+    Non riavvia, non invia via SSH e non modifica la coda della campagna.
+    """
+    if _smoke_campaign_service_active():
+        print(" [SMOKE] Il servizio di avvio automatico sta eseguendo una run: fermalo prima con")
+        print("         bash setup/setup_autostart.sh disable")
+        return False
+
+    out_dir = SMOKE_ROOT / datetime.now().strftime("%Y%m%d_%H%M%S")
+    _redirect_outputs_for_smoke(out_dir)
+
+    n_tasks = args.samples if args.samples is not None else SMOKE_DEFAULT_TASKS
+    config = dict(config)
+    config.update(sample_count=max(1, int(n_tasks)), repetitions=1,
+                  reboot_after_run=False, no_ssh=True, ssh_target=None)
+
+    queue = _smoke_build_queue(config, args)
+    state = {"signature": {"smoke": True}, "config": config, "queue": queue}
+
+    print("\n" + "=" * 65)
+    print(f" SMOKE TEST: {config['model_id']} su {config['device'].upper()} | {config['benchmark_name']} | "
+          f"{config['sample_count']} task per run | {len(queue)} run")
+    print(f" Output: {out_dir}")
+    print("=" * 65)
+
+    t0 = time.perf_counter()
+    reclaim_unified_memory(config.get("model_path"), kill_llama=True)
+    try:
+        preflight_stressor_check(queue, total_cores=os.cpu_count() or int(config.get("n_threads", 4)))
+    except StressorError as pre_err:
+        print(f"\n [SMOKE FALLITO] {pre_err}")
+        return False
+
+    results: List[Dict[str, Any]] = []
+    baseline_sig: Optional[Dict[str, float]] = None
+    for exp in queue:
+        rows: List[Dict[str, Any]] = []
+        error = None
+        try:
+            generated = execute_experiment(config=config, state=state, exp=exp,
+                                           task_timeout_sec=args.task_timeout)
+            exp["status"] = "completed"
+            rows = _smoke_read_tasks(generated, exp["exp_id"])
+        except SystemExit:
+            # execute_experiment ha già eseguito il fallback (salvataggi parziali + log).
+            # Ctrl+C arriva qui come KeyboardInterrupt (messaggio vuoto): in quel caso ci si ferma.
+            if exp.get("error", "") == "":
+                print("\n [SMOKE] Interrotto manualmente.")
+                raise
+            error = exp["error"]
+        finally:
+            cleanup_orphan_stressors(force=True)
+
+        sigs = [_smoke_load_signature(r) for r in rows]
+        item = {
+            "exp": exp, "rows": rows, "error": error,
+            "tpot": statistics.mean(_smoke_f(r, "per_token_lat_ms") for r in rows) if rows else None,
+            "r": statistics.mean(sg["r"] for sg in sigs) if sigs else None,
+            "cpu": statistics.mean(sg["cpu"] for sg in sigs) if sigs else None,
+            "unloaded_tasks": [],
+            "verdict": "OK",
+        }
+        if error or len(rows) < config["sample_count"]:
+            item["verdict"] = "FALLITO"
+            if not error:
+                item["error"] = f"completati {len(rows)}/{config['sample_count']} task"
+        elif any(_smoke_f(r, "output_tokens") <= 0 for r in rows):
+            item["verdict"] = "FALLITO"
+            item["error"] = "task senza token generati"
+        if exp["mode"] == "baseline" and sigs:
+            baseline_sig = {k: statistics.mean(sg[k] for sg in sigs) for k in sigs[0]}
+        elif exp["mode"] == "stressor" and sigs and baseline_sig is not None and item["verdict"] == "OK":
+            item["unloaded_tasks"] = [int(r["task_index"]) for r, sg in zip(rows, sigs)
+                                      if not _smoke_task_loaded(sg, baseline_sig)]
+            if item["unloaded_tasks"]:
+                item["verdict"] = "SOSPETTO"
+        results.append(item)
+
+    # Riepilogo
+    def fmt(v, nd=1):
+        return "-" if v is None else f"{v:.{nd}f}"
+
+    lines = [
+        "",
+        "=" * 78,
+        f" RIEPILOGO SMOKE TEST ({(time.perf_counter() - t0) / 60:.1f} min) - {out_dir}",
+        "=" * 78,
+        f" {'run':<12} {'esito':<9} {'TPOT ms/tok':>12} {'vs base':>8} {'vmstat r':>9} {'us+sy %':>8}",
+    ]
+    base_tpot = results[0]["tpot"] if results and results[0]["exp"]["mode"] == "baseline" else None
+    for it in results:
+        e = it["exp"]
+        name = "baseline" if e["mode"] == "baseline" else e["stressor_class"]
+        ratio = (f"x{it['tpot'] / base_tpot:.2f}" if it["tpot"] and base_tpot else "-")
+        lines.append(f" {name:<12} {it['verdict']:<9} {fmt(it['tpot'], 2):>12} {ratio:>8} "
+                     f"{fmt(it['r']):>9} {fmt(it['cpu']):>8}")
+        if it["error"]:
+            lines.append(f"     -> {it['error']}")
+        if it["unloaded_tasks"]:
+            lines.append(f"     -> nessun carico visibile in vmstat nei task {it['unloaded_tasks']} "
+                         f"(controlla {STRESS_LOG_DIR / (e['exp_id'] + '_stress_ng.log')})")
+    ok = all(it["verdict"] == "OK" for it in results)
+    lines.append("=" * 78)
+    lines.append(" ESITO: OK, la board è pronta per la campagna." if ok else
+                 " ESITO: PROBLEMI RILEVATI, non avviare la campagna prima di averli risolti.")
+    lines.append("=" * 78)
+    report = "\n".join(lines)
+    print(report)
+    try:
+        (out_dir / "smoke_report.txt").write_text(report + "\n", encoding="utf-8")
+    except Exception as e:
+        print(f" [WARNING] Impossibile salvare il report: {e}")
+    return ok
+
+
+# ==============================================================================
 # CLI ENTRYPOINT
 # ==============================================================================
 def parse_args():
@@ -2682,12 +2908,42 @@ def parse_args():
     )
     parser.add_argument("--reset", action="store_true", default=False, help="Azzera il checkpoint (experiment_state.json) e ricomincia da capo")
     parser.add_argument("--status", action="store_true", default=False, help="Mostra lo stato di avanzamento della coda di esperimenti ed esce")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        default=False,
+        help=(
+            "Smoke test (pochi minuti): baseline + una run per famiglia di stressor (N100, S75), "
+            f"{SMOKE_DEFAULT_TASKS} task ciascuna (o -n), senza reboot né SSH. Non tocca experiment_state.json, "
+            "run_config.json né results/: tutto finisce in smoke_test/<data_ora>/. "
+            "-s limita a una famiglia, --no-stressor esegue solo la baseline."
+        )
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+    if not args.smoke:
+        _main(args)
+        return
+    # Lo smoke test può riscrivere run_config.json (se gli passi -m/-d/-b ...): lo ripristiniamo a fine test
+    protected = [CONFIG_OUTPUT_PATH, CONFIG_OUTPUT_PATH.with_name(CONFIG_OUTPUT_PATH.name + ".bak")]
+    snapshot = {p: (p.read_bytes() if p.exists() else None) for p in protected}
+    try:
+        _main(args)
+    finally:
+        for p, data in snapshot.items():
+            try:
+                if data is None:
+                    p.unlink(missing_ok=True)
+                else:
+                    p.write_bytes(data)
+            except Exception as e:
+                print(f" [WARNING] Impossibile ripristinare {p}: {e}")
 
+
+def _main(args):
     try:
         current_cfg = {}
         if CONFIG_OUTPUT_PATH.exists():
@@ -2778,6 +3034,10 @@ def main():
             if args.no_ssh:
                 config["no_ssh"] = True
                 config["ssh_target"] = None
+
+        if args.smoke:
+            ok = run_smoke_test(config, args)
+            sys.exit(0 if ok else 1)
 
         if args.sync_only:
             sync_all_existing_csvs_via_ssh(config)

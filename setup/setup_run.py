@@ -257,10 +257,16 @@ def format_mmlu_prompt(sample: Dict[str, Any]) -> str:
         labels = ["A", "B", "C", "D"]
         for i, choice in enumerate(choices[:4]):
             choices_str += f"{labels[i]}. {choice}\n"
-        return f"Question: {q}\nOptions:\n{choices_str}Answer with only the letter corresponding to the correct answer:"
+        # La lettera deve arrivare nei primi token (con max_tokens=64 un ragionamento iniziale veniva
+        # troncato prima della risposta); la spiegazione mantiene una generazione lunga per TPOT/throughput.
+        return (
+            f"Question: {q}\nOptions:\n{choices_str}"
+            "Start your answer with the letter of the correct option (A, B, C or D) on its own line, "
+            "then briefly explain why.\nAnswer:"
+        )
     except Exception as e:
         log_runtime_error("format_mmlu_prompt", e)
-        return "Question: What is the time complexity of binary search?\nOptions:\nA. O(log n)\nB. O(n)\nC. O(n^2)\nD. O(1)\nAnswer with only the letter corresponding to the correct answer:"
+        return "Question: What is the time complexity of binary search?\nOptions:\nA. O(log n)\nB. O(n)\nC. O(n^2)\nD. O(1)\nStart your answer with the letter of the correct option (A, B, C or D) on its own line, then briefly explain why.\nAnswer:"
 
 
 def format_spider_prompt(sample: Dict[str, Any]) -> str:
