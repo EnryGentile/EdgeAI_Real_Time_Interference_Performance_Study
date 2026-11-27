@@ -248,6 +248,11 @@ def compute_doe_importance_and_significance(df_doe: pd.DataFrame) -> pd.DataFram
         if "duration" in df_sub.columns and "t_tot" in df_sub["duration"].values:
             df_sub = df_sub[df_sub["duration"] == "t_tot"].copy()
 
+        # Campagna incompleta: con un solo livello di N l'ANOVA non e' definita
+        if df_sub["num_workers"].nunique() < 2:
+            print(f"   [SKIP] {dev}/{s_cls}: un solo livello di N ({df_sub['num_workers'].unique().tolist()}), ANOVA non calcolabile")
+            continue
+
         valid_sizes = [s for s in df_sub["size"].unique() if s not in ("N/A", "none", "")]
         has_size = len(valid_sizes) > 1
         factors = ["num_workers", "size"] if has_size else ["num_workers"]

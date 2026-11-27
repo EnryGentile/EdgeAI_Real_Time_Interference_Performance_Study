@@ -413,6 +413,149 @@ def get_total_ram_mb() -> int:
     return 16384
 
 
+def get_mem_available_mb() -> Optional[int]:
+    """MemAvailable da /proc/meminfo in MB (None se non disponibile, es. su Windows)."""
+    try:
+        with open("/proc/meminfo", "r") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) // 1024
+    except Exception:
+        pass
+    return None
+
+
+# Memoria stimata oltre ai pesi del GGUF: KV cache, buffer di calcolo, runtime CUDA/llama-cli
+# (override: "model_overhead_mb" in run_config.json)
+MODEL_OVERHEAD_MB = 512
+# Quota del budget dello stressor 'mem' assegnata a --vm (il resto va a --memrate; --stream usa buffer piccoli)
+MEM_VM_SHARE = 0.75
+# Lo stressor 'io' non scrive mai più di questa frazione dello spazio libero del filesystem di --temp-path
+IO_MAX_DISK_FRACTION = 0.5
+
+
+def estimate_model_footprint_mb(config: Dict[str, Any]) -> int:
+    """Memoria occupata dal modello caricato: dimensione del GGUF + overhead (KV cache, buffer, runtime)."""
+    try:
+        gguf_mb = Path(config["model_path"]).stat().st_size // (1024 * 1024)
+    except Exception:
+        gguf_mb = 0
+    return int(gguf_mb + int(config.get("model_overhead_mb", MODEL_OVERHEAD_MB)))
+
+
+def compute_stressor_memory_budget(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    S_tot degli stressor 'mem' e 'io' = RAM che resterebbe libera dopo il caricamento del modello:
+        S_tot = MemAvailable (misurata ora, senza modello né stressor) - footprint stimato del modello
+    S_tot si calcola una volta a scheda pulita, prima di caricare qualsiasi modello: il footprint del modello
+    è quindi stimato dal GGUF e non misurato.
+    In questo modo S75 lascia sempre ~25% della RAM residua libera, sia su AGX (64 GB) sia su Nano (8 GB),
+    e i livelli S sono confrontabili tra le due board.
+    """
+    avail = get_mem_available_mb()
+    model_mb = estimate_model_footprint_mb(config)
+    if avail is None:
+        avail = int(get_total_ram_mb() * 0.9)
+    s_tot = avail - model_mb
+    if s_tot < 256:
+        print(f" [AVVISO STRESSOR] RAM residua stimata dopo il modello molto bassa ({s_tot} MB): uso S_tot=256 MB.")
+        s_tot = 256
+    return {"mem_avail_pre_mb": int(avail), "model_est_mb": int(model_mb), "s_tot_mb": int(s_tot)}
+
+
+def ensure_stressor_budget(config: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    S_tot è calcolato UNA SOLA VOLTA per campagna, a scheda pulita (dopo il transitorio post-boot,
+    prima di qualsiasi esperimento), e salvato nel checkpoint: tutti gli esperimenti successivi, anche
+    dopo i reboot, usano lo stesso valore. Misurarlo prima di ogni run lo renderebbe instabile: tra una run
+    e l'altra la memoria non torna del tutto libera (~1 GB in meno sulla Nano) e S75 cambierebbe dimensione.
+    Si ricalcola solo con una nuova coda (--reset o configurazione diversa).
+    """
+    budget = state.get("stress_budget")
+    if isinstance(budget, dict) and budget.get("model_path") == str(config.get("model_path")):
+        return budget
+    reclaim_unified_memory(config.get("model_path"), kill_llama=True)
+    budget = compute_stressor_memory_budget(config)
+    budget["model_path"] = str(config.get("model_path"))
+    budget["measured_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state["stress_budget"] = budget
+    try:
+        save_state(state)
+    except Exception:
+        pass
+    print(f" [STRESSOR] S_tot della campagna: MemAvailable {budget['mem_avail_pre_mb']} MB - modello stimato "
+          f"{budget['model_est_mb']} MB = {budget['s_tot_mb']} MB (fisso per tutta la campagna)")
+    return budget
+
+
+def _dir_size_mb(path: Path) -> float:
+    """Spazio occupato (blocchi allocati) da una cartella, in MB."""
+    total = 0
+    try:
+        stack = [str(path)]
+        while stack:
+            with os.scandir(stack.pop()) as it:
+                for e in it:
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            stack.append(e.path)
+                        else:
+                            st = e.stat(follow_symlinks=False)
+                            total += getattr(st, "st_blocks", 0) * 512 or st.st_size
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return total / (1024 * 1024)
+
+
+def _fs_used_mb(path: Path) -> Optional[float]:
+    """Spazio occupato sul filesystem che contiene 'path', in MB (None se statvfs non è disponibile)."""
+    try:
+        st = os.statvfs(str(path))
+        return (st.f_blocks - st.f_bfree) * st.f_frsize / (1024 * 1024)
+    except (AttributeError, OSError):
+        return None
+
+
+def _process_group_mem_mb(pgid: int) -> float:
+    """
+    Memoria effettivamente occupata da un gruppo di processi (stress-ng e i suoi worker), in MB.
+    Usa la PSS (/proc/<pid>/smaps_rollup), che divide le pagine condivise tra i worker forkati
+    invece di contarle più volte; ripiega sulla RSS di /proc/<pid>/statm se smaps_rollup non c'è.
+    """
+    total_kb = 0
+    page_kb = (os.sysconf("SC_PAGE_SIZE") // 1024) if hasattr(os, "sysconf") else 4
+    try:
+        pids = [d for d in os.listdir("/proc") if d.isdigit()]
+    except OSError:
+        return 0.0
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/stat", "r") as f:
+                stat = f.read()
+            # il campo 2 (comm) può contenere spazi: si parte dopo l'ultima ')'
+            fields = stat[stat.rfind(")") + 2:].split()
+            if int(fields[2]) != pgid:  # fields[2] = pgrp
+                continue
+            pss = None
+            try:
+                with open(f"/proc/{pid}/smaps_rollup", "r") as f:
+                    for line in f:
+                        if line.startswith("Pss:"):
+                            pss = int(line.split()[1])
+                            break
+            except OSError:
+                pass
+            if pss is None:
+                with open(f"/proc/{pid}/statm", "r") as f:
+                    pss = int(f.read().split()[1]) * page_kb
+            total_kb += pss
+        except (OSError, ValueError, IndexError):
+            continue
+    return total_kb / 1024
+
+
 _STRESSOR_SUPPORT_CACHE: Dict[str, bool] = {}
 
 
@@ -434,12 +577,18 @@ def build_stress_ng_cmd(
     stressor_method: Optional[str] = None,
     n_fraction: float = 1.0,
     s_fraction: Optional[float] = None,
-    total_cores: int = 4
+    total_cores: int = 4,
+    s_tot_mb: Optional[int] = None
 ) -> List[str]:
     """
     Costruisce il comando stress-ng eseguendo simultaneamente tutti i metodi
     della famiglia di stressor con i fattori (N workers e S working-set)
     applicati con lo stesso valore per tutti i metodi della famiglia.
+
+    s_tot_mb: RAM residua dopo il caricamento del modello (compute_stressor_memory_budget).
+      mem -> memoria totale dello stressor = S * s_tot_mb (75% a --vm, 25% a --memrate)
+      io  -> file totali dello stressor    = S * min(s_tot_mb, 50% spazio libero su --temp-path)
+    Se None (es. preflight) si usano le dimensioni precedenti: mem = 50% RAM totale * S, io = 512 MB * S per worker.
     """
     workers = max(1, int(round(total_cores * n_fraction)))
     # La cartella viene (ri)creata anche da PersistentStressor.start(): cleanup_orphan_stressors la cancella
@@ -474,15 +623,27 @@ def build_stress_ng_cmd(
 
     # 2. MEMORIA (vm, stream, mem_rate con fattore S applicato all'allocazione memoria)
     elif s_clean_class == "mem":
-        ram_mb = get_total_ram_mb()
-        alloc_mb_total = max(64, int(ram_mb * 0.50 * s_frac))
-        alloc_per_worker = max(16, alloc_mb_total // workers)
-        cmd += [
-            "--vm", str(workers),
-            "--vm-bytes", f"{alloc_per_worker}M",
-            "--stream", str(workers),
-            "--memrate", str(workers)
-        ]
+        if s_tot_mb is not None:
+            budget_mb = max(64, int(s_tot_mb * s_frac))
+            alloc_per_worker = max(16, int(budget_mb * MEM_VM_SHARE) // workers)
+            memrate_per_worker = max(16, int(budget_mb * (1.0 - MEM_VM_SHARE)) // workers)
+            cmd += [
+                "--vm", str(workers),
+                "--vm-bytes", f"{alloc_per_worker}M",
+                "--stream", str(workers),
+                "--memrate", str(workers),
+                "--memrate-bytes", f"{memrate_per_worker}M"
+            ]
+        else:
+            ram_mb = get_total_ram_mb()
+            alloc_mb_total = max(64, int(ram_mb * 0.50 * s_frac))
+            alloc_per_worker = max(16, alloc_mb_total // workers)
+            cmd += [
+                "--vm", str(workers),
+                "--vm-bytes", f"{alloc_per_worker}M",
+                "--stream", str(workers),
+                "--memrate", str(workers)
+            ]
 
     # 3. CACHE (cache e l1cache). '--llc-affinity' non esiste in stress-ng 0.13.x (installato
     # sulle board) e faceva fallire l'intero comando: viene aggiunto solo se la versione lo supporta.
@@ -496,7 +657,17 @@ def build_stress_ng_cmd(
 
     # 4. I/O (iomix, hdd eseguiti simultaneamente con lo stesso S)
     elif s_clean_class == "io":
-        file_mb = max(16, int(512 * s_frac))
+        if s_tot_mb is not None:
+            try:
+                st = os.statvfs(str(STRESS_TMP_DIR))
+                disk_cap_mb = int(st.f_bavail * st.f_frsize / (1024 * 1024) * IO_MAX_DISK_FRACTION)
+            except (AttributeError, OSError):
+                disk_cap_mb = s_tot_mb
+            io_total_mb = s_frac * min(s_tot_mb, disk_cap_mb)
+            # due stressor (iomix + hdd) con 'workers' file ciascuno
+            file_mb = max(16, int(io_total_mb / (2 * workers)))
+        else:
+            file_mb = max(16, int(512 * s_frac))
         cmd += [
             "--iomix", str(workers),
             "--iomix-bytes", f"{file_mb}M",
@@ -523,6 +694,65 @@ def build_stress_ng_cmd(
         cmd += ["--cpu", str(workers)]
 
     return cmd
+
+
+def stress_cmd_target_mb(cmd: Optional[List[str]]) -> float:
+    """
+    Memoria/disco totale richiesti dal comando stress-ng: somma di <stressor>-bytes * n. worker
+    (vm, memrate, iomix, hdd). 0 per le famiglie senza working-set (cpu, cache, os, interrupt).
+    """
+    if not cmd:
+        return 0.0
+    opts: Dict[str, str] = {}
+    for i, tok in enumerate(cmd[:-1]):
+        if tok.startswith("--"):
+            opts[tok[2:]] = cmd[i + 1]
+    total = 0.0
+    for name in ("vm", "memrate", "iomix", "hdd"):
+        size = opts.get(f"{name}-bytes")
+        if name in opts and size and size.endswith("M"):
+            try:
+                total += float(size[:-1]) * int(opts[name])
+            except ValueError:
+                pass
+    return total
+
+
+STRESS_INFO_EMPTY: Dict[str, Any] = {
+    "stress_mem_avail_pre_mb": "", "stress_model_est_mb": "", "stress_s_tot_mb": "", "stress_target_mb": "",
+    "stress_mem_peak_mb": "", "stress_mem_mean_mb": "", "stress_tmp_peak_mb": "", "stress_tmp_mean_mb": "",
+}
+
+
+def append_csv_row(path: Path, row: Dict[str, Any]):
+    """
+    Aggiunge una riga a un CSV cumulativo (DoE, master). Se il file esistente ha un'intestazione diversa
+    (es. creato da una versione precedente senza le colonne stress_*), viene riscritto con l'unione delle colonne.
+    """
+    if path.exists():
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            old_fields = list(reader.fieldnames or [])
+            missing = [k for k in row if k not in old_fields]
+            old_rows = list(reader) if missing else None
+        if missing:
+            fields = old_fields + missing
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=fields, restval="")
+                w.writeheader()
+                w.writerows(old_rows)
+        else:
+            fields = old_fields
+    else:
+        fields = list(row.keys())
+    exists = path.exists()
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields, restval="")
+        if not exists:
+            w.writeheader()
+        w.writerow(row)
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def stop_process_tree(proc: Optional[subprocess.Popen]):
@@ -579,7 +809,8 @@ def _tail_text(path: Path, max_chars: int = 2000) -> str:
 class PersistentStressor:
     """
     Stressor attivo per tutto l'esperimento (modalità t_tot):
-      - parte PRIMA del caricamento del modello e attende un warm-up, così i worker sono a regime
+      - parte DOPO il caricamento del modello (che avviene a sistema scarico) e attende un warm-up,
+        così i worker sono a regime
         già dal primo task;
       - resta acceso per tutti i task e viene fermato solo a fine esperimento;
       - l'output di stress-ng va in un log per esperimento (non più su DEVNULL) e check() solleva
@@ -592,12 +823,66 @@ class PersistentStressor:
         self.log_path = STRESS_LOG_DIR / f"{exp_id}_stress_ng.log"
         self.proc: Optional[subprocess.Popen] = None
         self._log_f = None
+        # Campioni a 1 Hz dell'occupazione effettiva: (t_monotonic, memoria PSS MB, file in --temp-path MB)
+        self.footprint_samples: List[Tuple[float, float, float]] = []
+        self._fp_stop = threading.Event()
+        self._fp_thread: Optional[threading.Thread] = None
+        self._fs_used0: Optional[float] = None
+
+    def _footprint_loop(self, interval: float = 1.0):
+        while not self._fp_stop.is_set():
+            proc = self.proc
+            if proc is None or proc.poll() is not None:
+                break
+            try:
+                pgid = os.getpgid(proc.pid) if os.name != "nt" else proc.pid
+                mem_mb = _process_group_mem_mb(pgid)
+                # stress-ng (hdd, iomix) cancella i file subito dopo averli aperti: non compaiono nella cartella,
+                # quindi si misura lo spazio in più occupato sul filesystem rispetto all'avvio dello stressor.
+                tmp_mb = _dir_size_mb(STRESS_TMP_DIR) if STRESS_TMP_DIR.exists() else 0.0
+                used_now = _fs_used_mb(STRESS_TMP_DIR)
+                if used_now is not None and self._fs_used0 is not None:
+                    tmp_mb = max(tmp_mb, used_now - self._fs_used0)
+                self.footprint_samples.append((time.monotonic(), round(mem_mb, 1), round(tmp_mb, 1)))
+            except Exception:
+                pass
+            self._fp_stop.wait(interval)
+
+    def footprint_window(self, t_start: float, t_end: float) -> Dict[str, float]:
+        """Media dell'occupazione dello stressor nella finestra [t_start, t_end] (es. un task)."""
+        win = [s for s in self.footprint_samples if t_start <= s[0] <= t_end]
+        if not win:
+            # task più brevi del periodo di campionamento: si usa il campione più vicino
+            before = [s for s in self.footprint_samples if s[0] <= t_end]
+            win = before[-1:] if before else []
+        if not win:
+            return {"stress_mem_mb": float("nan"), "stress_tmp_mb": float("nan")}
+        return {
+            "stress_mem_mb": round(statistics.mean(s[1] for s in win), 1),
+            "stress_tmp_mb": round(statistics.mean(s[2] for s in win), 1),
+        }
+
+    def footprint_summary(self) -> Dict[str, float]:
+        """Picco e media dell'occupazione dello stressor su tutto l'esperimento."""
+        if not self.footprint_samples:
+            nan = float("nan")
+            return {"stress_mem_peak_mb": nan, "stress_mem_mean_mb": nan,
+                    "stress_tmp_peak_mb": nan, "stress_tmp_mean_mb": nan}
+        mem = [s[1] for s in self.footprint_samples]
+        tmp = [s[2] for s in self.footprint_samples]
+        return {
+            "stress_mem_peak_mb": round(max(mem), 1),
+            "stress_mem_mean_mb": round(statistics.mean(mem), 1),
+            "stress_tmp_peak_mb": round(max(tmp), 1),
+            "stress_tmp_mean_mb": round(statistics.mean(tmp), 1),
+        }
 
     def start(self, warmup_sec: float):
         global _PERSISTENT_STRESSOR_ACTIVE
         cleanup_orphan_stressors(force=True)
         STRESS_TMP_DIR.mkdir(parents=True, exist_ok=True)
         STRESS_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        self._fs_used0 = _fs_used_mb(STRESS_TMP_DIR)
         self._log_f = open(self.log_path, "w", encoding="utf-8")
         self._log_f.write(f"# cmd: {' '.join(self.cmd)}\n")
         self._log_f.flush()
@@ -614,7 +899,11 @@ class PersistentStressor:
             self._close_log()
             raise StressorError(f"Impossibile avviare stress-ng ({' '.join(self.cmd)}): {e}") from e
         _PERSISTENT_STRESSOR_ACTIVE = True
-        print(f" [STRESSOR] stress-ng avviato (pid {self.proc.pid}), warm-up {warmup_sec:.0f}s prima del caricamento del modello...")
+        self.footprint_samples = []
+        self._fp_stop.clear()
+        self._fp_thread = threading.Thread(target=self._footprint_loop, daemon=True)
+        self._fp_thread.start()
+        print(f" [STRESSOR] stress-ng avviato (pid {self.proc.pid}), warm-up {warmup_sec:.0f}s prima del primo task...")
         time.sleep(max(0.0, warmup_sec))
         self.check("warm-up")
         print(" [STRESSOR] Warm-up completato, stress-ng attivo.")
@@ -635,6 +924,10 @@ class PersistentStressor:
     def stop(self):
         global _PERSISTENT_STRESSOR_ACTIVE
         _PERSISTENT_STRESSOR_ACTIVE = False
+        self._fp_stop.set()
+        if self._fp_thread is not None:
+            self._fp_thread.join(timeout=5)
+            self._fp_thread = None
         stop_process_tree(self.proc)
         self.proc = None
         self._close_log()
@@ -668,7 +961,8 @@ def preflight_stressor_check(queue: List[Dict[str, Any]], total_cores: int, seco
     print("\n [PREFLIGHT] Verifica dei comandi stress-ng per le famiglie: " + ", ".join(families))
     failures = []
     for fam in families:
-        cmd = build_stress_ng_cmd(fam, n_fraction=0.25, s_fraction=0.25, total_cores=total_cores)
+        # s_tot_mb piccolo: stesse opzioni della campagna (es. --memrate-bytes) ma allocazioni contenute
+        cmd = build_stress_ng_cmd(fam, n_fraction=0.25, s_fraction=0.25, total_cores=total_cores, s_tot_mb=1024)
         cmd += ["--timeout", f"{seconds}s"]
         try:
             res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -2276,16 +2570,26 @@ def execute_experiment(
         total_cores = os.cpu_count() or int(config.get("n_threads", 4))
 
         stress_cmd: Optional[List[str]] = None
+        stress_info: Dict[str, Any] = dict(STRESS_INFO_EMPTY)
         if exp["mode"] == "stressor":
             if shutil.which("stress-ng") is None:
                 raise RuntimeError("Il binario 'stress-ng' non è installato sulla macchina ma use_stressor=True.")
+            # S_tot fisso per la campagna (misurato una volta a scheda pulita, salvato nel checkpoint)
+            budget = ensure_stressor_budget(config, state)
             stress_cmd = build_stress_ng_cmd(
                 stressor_class=exp["stressor_class"],
                 stressor_method=exp["stressor_method"],
                 n_fraction=exp["n_fraction"],
                 s_fraction=exp["s_fraction"],
-                total_cores=total_cores
+                total_cores=total_cores,
+                s_tot_mb=budget["s_tot_mb"]
             )
+            stress_info.update({
+                "stress_mem_avail_pre_mb": budget["mem_avail_pre_mb"],
+                "stress_model_est_mb": budget["model_est_mb"],
+                "stress_s_tot_mb": budget["s_tot_mb"],
+                "stress_target_mb": round(stress_cmd_target_mb(stress_cmd), 1),
+            })
 
         print("\n" + "=" * 65)
         print(f" ESECUZIONE ESPERIMENTO: {exp['exp_id']}")
@@ -2295,26 +2599,32 @@ def execute_experiment(
         print(f" * Ripetizione      : {exp['repetition']} / {config['repetitions']}")
         if stress_cmd:
             print(f" * Stressor         : {' '.join(stress_cmd)} (Fase: {exp['duration']})")
+            print(f" * Memoria          : disponibile {stress_info['stress_mem_avail_pre_mb']} MB - modello stimato "
+                  f"{stress_info['stress_model_est_mb']} MB = S_tot {stress_info['stress_s_tot_mb']} MB | "
+                  f"richiesto dallo stressor {stress_info['stress_target_mb']:.0f} MB")
         else:
             print(" * Stressor         : DISATTIVO (Baseline)")
         print("=" * 65)
 
-        # Stressor persistente (t_tot): parte prima del modello, warm-up, resta attivo per tutti i task.
-        # Le modalità t_prefill / t_decode mantengono l'avvio per singolo task dentro run_task.
-        task_stress_cmd = stress_cmd
-        if stress_cmd and exp["duration"] == "t_tot":
-            stressor = PersistentStressor(stress_cmd, exp["exp_id"])
-            stressor.start(float(config.get("stress_warmup_sec", STRESS_WARMUP_SEC)))
-            task_stress_cmd = None
-
+        # 1. Caricamento del modello a sistema scarico: il caricamento non è una metrica misurata e,
+        #    con lo stressor già attivo, sulla Nano 'io' satura la SD e il GGUF (4.6 GB) non si carica entro il timeout.
         print("\n [SESSIONE GGUF] Allocazione modello GGUF in memoria (caricamento unico per l'esperimento)...")
         t_load_0 = time.perf_counter()
         llama_session = LlamaPersistentSession(config)
         llama_session.start()
         t_load_sec = time.perf_counter() - t_load_0
         print(f" [OK] Modello GGUF allocato in {t_load_sec:.1f}s. Tra un task e il successivo verrà resettata solo la KV cache (/clear).")
-        if stressor is not None:
-            stressor.check("caricamento del modello")
+
+        # 2. Stressor persistente (t_tot): parte DOPO il modello, warm-up, resta attivo per tutti i task,
+        #    così i worker sono a regime già dal primo task. Lo stesso ordine vale per tutte le famiglie.
+        #    Le modalità t_prefill / t_decode mantengono l'avvio per singolo task dentro run_task.
+        task_stress_cmd = stress_cmd
+        if stress_cmd and exp["duration"] == "t_tot":
+            stressor = PersistentStressor(stress_cmd, exp["exp_id"])
+            stressor.start(float(config.get("stress_warmup_sec", STRESS_WARMUP_SEC)))
+            task_stress_cmd = None
+            if not llama_session.is_alive():
+                raise ExperimentRuntimeError("llama-cli terminato durante il warm-up dello stressor.")
 
         monitor = SystemMonitor()
         monitor.start()
@@ -2381,6 +2691,12 @@ def execute_experiment(
             }
             for k, v in vm_avg.items():
                 record[f"vmstat_{k}"] = v
+            # Occupazione effettiva dello stressor durante il task (vuoto in baseline)
+            if stressor is not None:
+                record.update(stressor.footprint_window(metrics["t_start_mono"], metrics["t_end_mono"]))
+            else:
+                record.update({"stress_mem_mb": "", "stress_tmp_mb": ""})
+            record["stress_target_mb"] = stress_info["stress_target_mb"]
 
             task_records.append(record)
 
@@ -2419,6 +2735,10 @@ def execute_experiment(
         monitor.stop()
         if stressor is not None:
             stressor.stop()
+            stress_info.update(stressor.footprint_summary())
+            print(f" [STRESSOR] Occupazione effettiva: memoria picco {stress_info['stress_mem_peak_mb']} MB "
+                  f"(media {stress_info['stress_mem_mean_mb']}) | file temporanei picco {stress_info['stress_tmp_peak_mb']} MB "
+                  f"| richiesto {stress_info['stress_target_mb']} MB")
             stressor = None
         cleanup_orphan_stressors()
 
@@ -2529,19 +2849,12 @@ def execute_experiment(
                 "throughput_tok_s": mean_thr,
                 "jitter_ms": mean_jitter,
             }
+            doe_row.update(stress_info)
 
             # 1. DoE per classe/famiglia (es. doe_slm-1b_gpu_mmlu_cpu.csv)
             doe_csv_path = RESULTS_DIR / f"doe_{config['model_id'].lower()}_{config['device']}_{bench_lower}_{exp['stressor_class']}.csv"
-            doe_exists = doe_csv_path.exists()
-            with open(doe_csv_path, "a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(doe_row.keys()))
-                if not doe_exists:
-                    writer.writeheader()
-                writer.writerow(doe_row)
-                f.flush()
-                os.fsync(f.fileno())
+            append_csv_row(doe_csv_path, doe_row)
 
-            master_exists = MASTER_SUMMARY_CSV.exists()
             master_row = {
                 "exp_id": exp["exp_id"],
                 "model_id": config["model_id"],
@@ -2561,13 +2874,8 @@ def execute_experiment(
                 "avg_cpu_temp_c": mean_cpu_temp,
                 "avg_gpu_temp_c": mean_gpu_temp,
             }
-            with open(MASTER_SUMMARY_CSV, "a", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=list(master_row.keys()))
-                if not master_exists:
-                    writer.writeheader()
-                writer.writerow(master_row)
-                f.flush()
-                os.fsync(f.fileno())
+            master_row.update(stress_info)
+            append_csv_row(MASTER_SUMMARY_CSV, master_row)
 
             print(f" [OK] Riepilogo DoE aggiornato in: {doe_csv_path}")
             generated_files.append((doe_csv_path, "results"))
@@ -2737,6 +3045,9 @@ def run_smoke_test(config: Dict[str, Any], args) -> bool:
     except StressorError as pre_err:
         print(f"\n [SMOKE FALLITO] {pre_err}")
         return False
+    # S_tot misurato ora, prima della baseline, come all'inizio di una campagna
+    if any(e["mode"] == "stressor" for e in queue):
+        ensure_stressor_budget(config, state)
 
     results: List[Dict[str, Any]] = []
     baseline_sig: Optional[Dict[str, float]] = None
@@ -3001,7 +3312,13 @@ def _main(args):
             ssh_port_in = args.ssh_port if args.ssh_port is not None else current_cfg.get("ssh_port", 22)
             ssh_key_in = args.ssh_key if args.ssh_key is not None else current_cfg.get("ssh_key")
             ctx_size_in = args.ctx_size if args.ctx_size is not None else current_cfg.get("ctx_size", 1024)
-            max_tokens_in = args.max_tokens if args.max_tokens is not None else current_cfg.get("max_tokens")
+            # max_tokens precedente riusato solo se il benchmark non cambia: passando da MMLU (64) a Spider (256)
+            # o viceversa vale il default del nuovo benchmark (None -> default_max_tokens in setup_run.BENCHMARKS)
+            same_bench = str(bench_in).strip().lower() == str(current_cfg.get("benchmark_name", "")).strip().lower()
+            if args.max_tokens is not None:
+                max_tokens_in = args.max_tokens
+            else:
+                max_tokens_in = current_cfg.get("max_tokens") if same_bench else None
 
             instantiate_run(
                 model_input=model_in,
@@ -3085,6 +3402,10 @@ def _main(args):
 
             # 1. Attesa transitorio post-boot (default 60s su Jetson Orin)
             wait_for_post_boot_transient(int(config.get("transient_wait_sec", 60)), config.get("model_path"))
+
+            # 1b. Alla prima run della campagna con stressor: S_tot misurato a scheda appena avviata
+            if any(e["mode"] == "stressor" for e in pending):
+                ensure_stressor_budget(config, state)
 
             # 2. Esecuzione esperimento (protetto da try/except e emergency fallback)
             generated_files = execute_experiment(
