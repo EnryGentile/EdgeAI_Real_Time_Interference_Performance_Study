@@ -1,0 +1,120 @@
+task_index,sample_id,exp_id,model_id,device,benchmark,stressor_class,stressor_method,num_workers,size,duration,repetition,prompt_tokens,output_tokens,ttft_ms,prompt_ms_per_tok,per_token_lat_ms,throughput_tok_s,jitter_ms,task_duration_s,ground_truth,model_response,vmstat_r,vmstat_b,vmstat_swpd_kb,vmstat_free_kb,vmstat_buff_kb,vmstat_cache_kb,vmstat_si,vmstat_so,vmstat_bi,vmstat_bo,vmstat_in,vmstat_cs,vmstat_us,vmstat_sy,vmstat_id,vmstat_wa,vmstat_st,vmstat_cpu_temp_c,vmstat_gpu_temp_c,vmstat_throttled
+1,1,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,328,8,93.2148,0.2841,10.5152,95.1,2.2258,0.1775,SELECT count(*) FROM singer,SELECT COUNT(Singer_ID) FROM singer,6.0,0.0,0.0,59523728.0,194008.0,1588336.0,0.0,0.0,1288.0,33772.0,4430.0,5512.0,5.0,12.0,82.0,1.0,0.0,52.02,47.91,0.0
+2,2,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,30,8,18.5824,0.6224,10.6157,94.2,1.4342,0.1038,SELECT count(*) FROM singer,SELECT COUNT(Singer_ID) FROM singer,6.0,0.0,0.0,59523728.0,194008.0,1588336.0,0.0,0.0,1288.0,33772.0,4430.0,5512.0,5.0,12.0,82.0,1.0,0.0,52.02,47.91,0.0
+3,3,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,41,21,19.0422,0.4628,9.0334,110.7,6.9464,0.3086,"SELECT name ,  country ,  age FROM singer ORDER BY age DESC","```sql
+SELECT 
+  s.Name,
+  s.Country,
+  s.Age
+FROM 
+  singer s
+ORDER BY 
+  s.Age DESC;
+```",9.0,1.0,0.0,59491700.0,197004.0,1605848.0,0.0,0.0,3188.0,2251800.0,44300.0,50231.0,21.0,53.0,24.0,3.0,0.0,52.12,48.12,0.0
+4,4,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,40,21,19.1204,0.4753,9.8522,101.5,4.7736,0.2558,"SELECT name ,  country ,  age FROM singer ORDER BY age DESC","```sql
+SELECT s.Name, s.Country, s.Age
+FROM singer s
+ORDER BY s.Age DESC;
+```",9.0,1.0,0.0,59491700.0,197004.0,1605848.0,0.0,0.0,3188.0,2251800.0,44300.0,50231.0,21.0,53.0,24.0,3.0,0.0,52.12,48.12,0.0
+5,5,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,37,35,18.8915,0.5142,9.2851,107.7,2.5251,0.3719,"SELECT avg(age) ,  min(age) ,  max(age) FROM singer WHERE country  =  'France'","```sql
+SELECT AVG(Age) AS avg_age, MIN(Age) AS min_age, MAX(Age) AS max_age
+FROM singer
+WHERE Country = 'France';
+```",16.0,1.0,0.0,59557944.0,199868.0,1551804.0,0.0,0.0,1256.0,2305588.0,43989.0,50203.0,22.0,52.0,24.0,2.0,0.0,52.73,50.56,0.0
+6,6,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,25,35,20.6821,0.8286,9.3458,107.0,2.8552,0.3756,"SELECT avg(age) ,  min(age) ,  max(age) FROM singer WHERE country  =  'France'","```sql
+SELECT AVG(Age) AS avg_age, MIN(Age) AS min_age, MAX(Age) AS max_age
+FROM singer
+WHERE Country = 'France';
+```",15.0,0.0,0.0,59583524.0,202880.0,1484680.0,0.0,0.0,984.0,2281540.0,44831.0,49883.0,22.0,51.0,24.0,3.0,0.0,52.51,49.09,0.0
+7,7,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,38,59,18.7626,0.4995,9.1996,108.7,2.9756,0.6079,"SELECT song_name ,  song_release_year FROM singer ORDER BY age LIMIT 1","```sql
+SELECT T2.Name, T2.Song_release_year
+FROM singer_in_concert AS T1
+JOIN singer AS T2 ON T1.Singer_ID = T2.Singer_ID
+WHERE T1.concert_ID = (SELECT concert_ID FROM concert ORDER BY Year ASC LIMIT 1);
+```",13.0,6.0,0.0,59563124.0,205900.0,1537824.0,0.0,0.0,620.0,2256584.0,43836.0,48706.0,23.0,49.0,26.0,3.0,0.0,52.89,52.47,0.0
+8,8,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,38,26,18.2779,0.4771,9.4787,105.5,3.3275,0.2933,"SELECT song_name ,  song_release_year FROM singer ORDER BY age LIMIT 1","```sql
+SELECT S.Name, S.Song_release_year
+FROM singer
+WHERE Age = (SELECT MIN(Age) FROM singer);
+```",16.0,2.0,0.0,59509956.0,208936.0,1590324.0,0.0,0.0,944.0,2245760.0,45146.0,49410.0,23.0,51.0,24.0,2.0,0.0,53.01,52.59,0.0
+9,9,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,34,12,19.7337,0.5763,9.99,100.1,6.7039,0.1899,SELECT DISTINCT country FROM singer WHERE age  >  20,"```sql
+SELECT DISTINCT Country
+FROM singer
+WHERE Age > 20;
+```",16.0,2.0,0.0,59509956.0,208936.0,1590324.0,0.0,0.0,944.0,2245760.0,45146.0,49410.0,23.0,51.0,24.0,2.0,0.0,53.01,52.59,0.0
+10,10,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,33,7,18.6437,0.5712,10.2775,97.3,8.1997,0.1114,SELECT DISTINCT country FROM singer WHERE age  >  20,SELECT Country FROM singer WHERE Age > 20,14.0,1.0,0.0,59499900.0,211888.0,1588036.0,0.0,0.0,1488.0,2281292.0,44057.0,52050.0,22.0,51.0,24.0,3.0,0.0,52.72,49.06,0.0
+11,11,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,33,20,18.1047,0.5451,9.3809,106.6,3.418,0.2344,"SELECT country ,  count(*) FROM singer GROUP BY country","```sql
+SELECT Country, COUNT(*) as Singer_Count
+FROM singer_in_concert
+GROUP BY Country;
+```",14.0,1.0,0.0,59499900.0,211888.0,1588036.0,0.0,0.0,1488.0,2281292.0,44057.0,52050.0,22.0,51.0,24.0,3.0,0.0,52.72,49.06,0.0
+12,12,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,28,46,18.1236,0.6396,9.2593,108.0,1.437,0.4442,"SELECT country ,  count(*) FROM singer GROUP BY country",SELECT COUNT(T1.Singer_ID) AS num_singers FROM singer AS T1 INNER JOIN singer_in_concert AS T2 ON T1.Singer_ID = T2.Singer_ID WHERE T2.Singer_ID IS NULL,19.0,2.0,0.0,59494076.0,214940.0,1594380.0,0.0,0.0,976.0,2238556.0,46568.0,50270.0,22.0,50.0,25.0,3.0,0.0,52.88,49.06,0.0
+13,13,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,35,21,20.8015,0.5976,9.3721,106.7,4.2266,0.2553,SELECT song_name FROM singer WHERE age  >  (SELECT avg(age) FROM singer),"```sql
+SELECT s.Name 
+FROM singer s 
+WHERE s.Age > (SELECT AVG(Age) FROM singer);
+```",15.0,1.0,0.0,59544572.0,217928.0,1543132.0,0.0,0.0,1368.0,2279352.0,44173.0,49252.0,23.0,50.0,24.0,3.0,0.0,53.09,52.03,0.0
+14,14,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,36,16,18.2466,0.5131,9.1324,109.5,4.4281,0.2014,SELECT song_name FROM singer WHERE age  >  (SELECT avg(age) FROM singer),"```sql
+SELECT S.Name 
+FROM singer 
+WHERE Age > (SELECT Average FROM stadium);
+```",15.0,1.0,0.0,59544572.0,217928.0,1543132.0,0.0,0.0,1368.0,2279352.0,44173.0,49252.0,23.0,50.0,24.0,3.0,0.0,53.09,52.03,0.0
+15,15,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,42,45,19.4876,0.4604,9.0662,110.3,3.377,0.4823,"SELECT LOCATION ,  name FROM stadium WHERE capacity BETWEEN 5000 AND 10000","```sql
+SELECT T2.Location, T2.Name
+FROM stadium AS T1
+JOIN concert AS T2 ON T1.Stadium_ID = T2.Stadium_ID
+WHERE T1.Capacity BETWEEN 5000 AND 10000;
+```",16.0,1.0,0.0,59434116.0,220860.0,1654512.0,0.0,0.0,1236.0,2250364.0,45435.0,48376.0,22.0,51.0,24.0,2.0,0.0,52.94,49.47,0.0
+16,16,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,45,42,21.4943,0.4725,9.2251,108.4,3.8578,0.4646,"SELECT LOCATION ,  name FROM stadium WHERE capacity BETWEEN 5000 AND 10000","```sql
+SELECT T2.Location, T2.Name
+FROM concert
+JOIN stadium AS T1 ON T1.Stadium_ID = T2.Stadium_ID
+WHERE T1.Capacity BETWEEN 5000 AND 10000;
+```",21.0,1.0,0.0,59474288.0,223824.0,1590296.0,0.0,0.0,1240.0,2293016.0,44996.0,52573.0,22.0,51.0,24.0,3.0,0.0,53.05,49.38,0.0
+17,17,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,32,13,18.6649,0.5828,9.6061,104.1,3.4407,0.1534,"select max(capacity), average from stadium","SELECT MAX(Capacity) ,  AVG(Average) FROM stadium",21.0,1.0,0.0,59474288.0,223824.0,1590296.0,0.0,0.0,1240.0,2293016.0,44996.0,52573.0,22.0,51.0,24.0,3.0,0.0,53.05,49.38,0.0
+18,18,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,29,14,17.3953,0.5981,9.1241,109.6,2.7155,0.1542,"select avg(capacity) ,  max(capacity) from stadium","SELECT AVG(Capacity) ,  MAX(Capacity) FROM stadium",15.0,2.0,0.0,59481248.0,226740.0,1593900.0,0.0,0.0,1768.0,2286680.0,44323.0,47962.0,23.0,51.0,24.0,2.0,0.0,53.55,52.19,0.0
+19,19,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,32,18,18.78,0.5819,9.0992,109.9,1.0238,0.1829,"SELECT name ,  capacity FROM stadium ORDER BY average DESC LIMIT 1","SELECT Name, Capacity FROM stadium WHERE Average = ( SELECT MAX(Average) FROM stadium )",9.0,8.0,0.0,59398304.0,226968.0,1657096.0,0.0,0.0,284.0,1927404.0,29581.0,30661.0,19.0,37.0,6.0,38.0,0.0,53.07,52.62,0.0
+20,20,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,25,18,17.4745,0.7068,9.3897,106.5,1.5089,0.1864,"SELECT name ,  capacity FROM stadium ORDER BY average DESC LIMIT 1","SELECT Name, Capacity FROM stadium WHERE Average = ( SELECT MAX(Average) FROM stadium )",9.0,8.0,0.0,59398304.0,226968.0,1657096.0,0.0,0.0,284.0,1927404.0,29581.0,30661.0,19.0,37.0,6.0,38.0,0.0,53.07,52.62,0.0
+21,21,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,37,19,17.9483,0.4862,9.0253,110.8,0.6782,0.1896,SELECT count(*) FROM concert WHERE YEAR  =  2014 OR YEAR  =  2015,SELECT COUNT(*) FROM concert WHERE YEAR = '2014' OR YEAR = '2015',2.0,22.0,0.0,59374484.0,227088.0,1643612.0,0.0,0.0,124.0,1746300.0,31737.0,33442.0,16.0,34.0,5.0,45.0,0.0,52.53,49.31,0.0
+22,22,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,31,19,18.2393,0.5836,9.0744,110.2,0.436,0.1911,SELECT count(*) FROM concert WHERE YEAR  =  2014 OR YEAR  =  2015,SELECT COUNT(*) FROM concert WHERE YEAR = '2014' OR YEAR = '2015',2.0,22.0,0.0,59374484.0,227088.0,1643612.0,0.0,0.0,124.0,1746300.0,31737.0,33442.0,16.0,34.0,5.0,45.0,0.0,52.53,49.31,0.0
+23,23,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,36,59,18.7369,0.5222,9.058,110.4,5.7359,0.6985,"SELECT T2.name ,  count(*) FROM concert AS T1 JOIN stadium AS T2 ON T1.stadium_id  =  T2.stadium_id GROUP BY T1.stadium_id","```sql
+SELECT 
+    s.Name AS Stadium_Name,
+    COUNT(c.concert_ID) AS Number_of_Concerts
+FROM 
+    concert c
+JOIN 
+    singer_in_concert si ON c.concert_ID = si.concert_ID
+JOIN 
+    stadium s ON c.Stadium_ID = s.Stadium_ID
+GROUP BY 
+    s.Name;
+```",6.0,20.0,0.0,59340156.0,227220.0,1705968.0,0.0,0.0,140.0,1622292.0,23573.0,18064.0,17.0,32.0,9.0,41.0,0.0,53.23,49.66,0.0
+24,24,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,31,29,20.4455,0.653,9.0992,109.9,0.7736,0.2849,"SELECT T2.name ,  count(*) FROM concert AS T1 JOIN stadium AS T2 ON T1.stadium_id  =  T2.stadium_id GROUP BY T1.stadium_id",SELECT COUNT(*) FROM concert_in_concert AS T1 INNER JOIN stadium AS T2 ON T1.Stadium_ID = T2.Stadium_ID,4.0,15.0,0.0,59368872.0,227368.0,1673260.0,0.0,0.0,252.0,1613848.0,28678.0,31970.0,15.0,34.0,8.0,43.0,0.0,53.16,50.59,0.0
+25,25,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,45,66,20.7865,0.4632,9.1241,109.6,3.0122,0.6777,"SELECT T2.name ,  T2.capacity FROM concert AS T1 JOIN stadium AS T2 ON T1.stadium_id  =  T2.stadium_id WHERE T1.year  >=  2014 GROUP BY T2.stadium_id ORDER BY count(*) DESC LIMIT 1","```sql
+SELECT s.Name, s.Capacity
+FROM stadium s
+JOIN singer_in_concert si ON s.Stadium_ID = si.Stadium_ID
+JOIN concert c ON si.concert_ID = c.concert_ID
+WHERE c.Year >= '2014'
+GROUP BY s.Name, s.Capacity
+ORDER BY COUNT(c.Year) DESC;
+```",1.0,21.0,0.0,59444264.0,227492.0,1605012.0,0.0,0.0,272.0,1739468.0,32409.0,37544.0,17.0,34.0,5.0,44.0,0.0,53.18,52.72,0.0
+26,26,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,42,40,22.6805,0.5338,9.1075,109.8,1.66,0.395,"select t2.name ,  t2.capacity from concert as t1 join stadium as t2 on t1.stadium_id  =  t2.stadium_id where t1.year  >  2013 group by t2.stadium_id order by count(*) desc limit 1","SELECT T2.Name, T2.Capacity FROM concert AS T1 INNER JOIN stadium AS T2 ON T1.Stadium_ID = T2.Stadium_ID WHERE T1.Year > '2013'",13.0,22.0,0.0,59385804.0,227628.0,1650100.0,0.0,0.0,140.0,1839024.0,27103.0,24652.0,17.0,38.0,6.0,39.0,0.0,53.48,51.5,0.0
+27,27,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,29,17,17.3003,0.5942,9.3371,107.1,2.8429,0.1856,SELECT YEAR FROM concert GROUP BY YEAR ORDER BY count(*) DESC LIMIT 1,SELECT Year FROM concert GROUP BY Year ORDER BY COUNT(concert_ID) DESC LIMIT 1,13.0,22.0,0.0,59385804.0,227628.0,1650100.0,0.0,0.0,140.0,1839024.0,27103.0,24652.0,17.0,38.0,6.0,39.0,0.0,53.48,51.5,0.0
+28,28,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,31,17,18.1919,0.5884,8.9366,111.9,2.2199,0.1792,SELECT YEAR FROM concert GROUP BY YEAR ORDER BY count(*) DESC LIMIT 1,SELECT Year FROM concert GROUP BY Year ORDER BY COUNT(concert_ID) DESC LIMIT 1,5.0,14.0,0.0,59387852.0,227760.0,1664320.0,0.0,0.0,172.0,1710028.0,34058.0,37422.0,17.0,36.0,7.0,40.0,0.0,53.73,50.84,0.0
+29,29,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,29,35,17.8837,0.6086,8.9847,111.3,5.8264,0.4221,SELECT name FROM stadium WHERE stadium_id NOT IN (SELECT stadium_id FROM concert),"```sql
+SELECT Name FROM stadium WHERE Stadium_ID NOT IN (
+  SELECT Stadium_ID 
+  FROM singer_in_concert
+  GROUP BY Stadium_ID
+  HAVING COUNT(concert_ID) = 0
+);
+```",15.0,7.0,0.0,59347996.0,228028.0,1687152.0,0.0,0.0,396.0,1661168.0,28507.0,27794.0,17.0,33.0,16.0,34.0,0.0,53.72,53.25,0.0
+30,30,run_slm-1b_gpu_spider_io_N100_t_tot_S75_rep16,SLM-1B,gpu,Spider,io,iomix+hdd,N_tot,75% S_tot,t_tot,16,34,34,19.2731,0.5664,9.0744,110.2,3.5125,0.3735,SELECT name FROM stadium WHERE stadium_id NOT IN (SELECT stadium_id FROM concert),"```sql
+SELECT Name FROM stadium WHERE Stadium_ID NOT IN (
+  SELECT Stadium_ID FROM concert
+) AND Stadium_ID NOT IN (
+  SELECT Stadium_ID FROM singer_in_concert
+);
+```",7.0,8.0,0.0,59348820.0,228140.0,1683744.0,0.0,0.0,144.0,1951896.0,35466.0,48721.0,18.0,36.0,5.0,40.0,0.0,53.84,54.47,0.0
