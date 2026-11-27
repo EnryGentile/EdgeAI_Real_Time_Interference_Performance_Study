@@ -1,0 +1,65 @@
+device,stressor_class,model_type,anova_type,metric,term,df,sum_sq,importance_pct,r_squared,shapiro_w,shapiro_p,residuals_normal,levene_stat,levene_p,homoscedastic,f_stat,anova_p,kruskal_h,kruskal_p,recommended_test,active_p,significant_005
+cpu,cache,1-way (N),Type II,ttft_ms,num_workers,3,204.0012,3.64,0.0364,0.7244,5.8977e-11,False,0.604,0.61438,True,0.9556,0.41818,0.1843,0.98009,Kruskal-Wallis,0.98009,False
+cpu,cache,1-way (N),Type II,ttft_ms,Residual,76,5407.947,96.36,0.0364,0.7244,5.8977e-11,False,0.604,0.61438,True,,,,,Error,,False
+cpu,cache,1-way (N),Type II,per_token_lat_ms,num_workers,3,2.135,4.88,0.0488,0.7967,3.8412e-09,False,0.4669,0.70623,True,1.2986,0.28109,3.3872,0.33569,Kruskal-Wallis,0.33569,False
+cpu,cache,1-way (N),Type II,per_token_lat_ms,Residual,76,41.6491,95.12,0.0488,0.7967,3.8412e-09,False,0.4669,0.70623,True,,,,,Error,,False
+cpu,cache,1-way (N),Type II,throughput_tok_s,num_workers,3,0.0325,4.87,0.0487,0.8018,5.3465e-09,False,0.4479,0.71947,True,1.2966,0.28177,3.3872,0.33569,Kruskal-Wallis,0.33569,False
+cpu,cache,1-way (N),Type II,throughput_tok_s,Residual,76,0.635,95.13,0.0487,0.8018,5.3465e-09,False,0.4479,0.71947,True,,,,,Error,,False
+cpu,cache,1-way (N),Type II,jitter_ms,num_workers,3,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,cache,1-way (N),Type II,jitter_ms,Residual,76,0.0,0.0,,,,False,,,False,,,,,Error,,False
+cpu,cpu,1-way (N),Type II,ttft_ms,num_workers,3,60.3603,0.74,0.0074,0.5467,2.4976e-14,False,0.3997,0.75361,True,0.1879,0.90434,3.8569,0.27734,Kruskal-Wallis,0.27734,False
+cpu,cpu,1-way (N),Type II,ttft_ms,Residual,76,8138.3487,99.26,0.0074,0.5467,2.4976e-14,False,0.3997,0.75361,True,,,,,Error,,False
+cpu,cpu,1-way (N),Type II,per_token_lat_ms,num_workers,3,51.2431,8.75,0.0875,0.4954,4.0187e-15,False,2.0401,0.11533,True,2.4306,0.071637,2.0497,0.56215,Kruskal-Wallis,0.56215,False
+cpu,cpu,1-way (N),Type II,per_token_lat_ms,Residual,76,534.0817,91.25,0.0875,0.4954,4.0187e-15,False,2.0401,0.11533,True,,,,,Error,,False
+cpu,cpu,1-way (N),Type II,throughput_tok_s,num_workers,3,0.5805,8.77,0.0877,0.5259,1.1705e-14,False,1.9801,0.12406,True,2.4368,0.071101,2.0497,0.56215,Kruskal-Wallis,0.56215,False
+cpu,cpu,1-way (N),Type II,throughput_tok_s,Residual,76,6.035,91.23,0.0877,0.5259,1.1705e-14,False,1.9801,0.12406,True,,,,,Error,,False
+cpu,cpu,1-way (N),Type II,jitter_ms,num_workers,3,88.3461,5.44,0.0544,0.4268,4.2616e-16,False,2.5556,0.061498,True,1.4562,0.23322,1.5954,0.66044,Kruskal-Wallis,0.66044,False
+cpu,cpu,1-way (N),Type II,jitter_ms,Residual,76,1536.9025,94.56,0.0544,0.4268,4.2616e-16,False,2.5556,0.061498,True,,,,,Error,,False
+cpu,interrupt,1-way (N),Type II,ttft_ms,num_workers,1,494.976,4.77,0.0477,0.9433,0.13375,True,9.6075,0.0046151,False,1.3014,0.26436,0.1267,0.72185,Kruskal-Wallis,0.72185,False
+cpu,interrupt,1-way (N),Type II,ttft_ms,Residual,26,9889.0543,95.23,0.0477,0.9433,0.13375,True,9.6075,0.0046151,False,,,,,Error,,False
+cpu,interrupt,1-way (N),Type II,per_token_lat_ms,num_workers,1,125878.6743,68.43,0.6843,0.9643,0.43959,True,2.6918,0.11291,True,56.3462,5.7155e-08,15.6418,7.6542e-05,ANOVA_F,5.7155e-08,True
+cpu,interrupt,1-way (N),Type II,per_token_lat_ms,Residual,26,58084.5773,31.57,0.6843,0.9643,0.43959,True,2.6918,0.11291,True,,,,,Error,,False
+cpu,interrupt,1-way (N),Type II,throughput_tok_s,num_workers,1,1.4718,66.3,0.663,0.945,0.14768,True,0.0031,0.95637,True,51.14,1.3551e-07,15.6418,7.6542e-05,ANOVA_F,1.3551e-07,True
+cpu,interrupt,1-way (N),Type II,throughput_tok_s,Residual,26,0.7482,33.7,0.663,0.945,0.14768,True,0.0031,0.95637,True,,,,,Error,,False
+cpu,interrupt,1-way (N),Type II,jitter_ms,num_workers,1,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,interrupt,1-way (N),Type II,jitter_ms,Residual,26,0.0,0.0,,,,False,,,False,,,,,Error,,False
+cpu,io,2-way (N*S),Type III,ttft_ms,num_workers,3,1622578.5606,94.27,0.9456,0.9876,0.035516,False,4.4761,4.0567e-06,False,1317.7797,1.1089e-143,221.1535,1.1307e-47,Kruskal-Wallis,1.1307e-47,True
+cpu,io,2-way (N*S),Type III,ttft_ms,size,2,1110.3953,0.06,0.9456,0.9876,0.035516,False,4.4761,4.0567e-06,False,1.3527,0.2606,0.2348,0.88921,Kruskal-Wallis,0.88921,False
+cpu,io,2-way (N*S),Type III,ttft_ms,num_workers:size,6,3960.7847,0.23,0.9456,0.9876,0.035516,False,4.4761,4.0567e-06,False,1.6084,0.1457,,,ANOVA_F (assumptions violated),0.1457,False
+cpu,io,2-way (N*S),Type III,ttft_ms,Residual,228,93578.5955,5.44,0.9456,0.9876,0.035516,False,4.4761,4.0567e-06,False,,,,,Error,,False
+cpu,io,2-way (N*S),Type III,per_token_lat_ms,num_workers,3,7701342.2442,96.75,0.97,0.9512,3.1486e-07,False,1.2389,0.26222,True,2454.8295,3.2851e-173,224.5008,2.1366e-48,Kruskal-Wallis,2.1366e-48,True
+cpu,io,2-way (N*S),Type III,per_token_lat_ms,size,2,9194.067,0.12,0.97,0.9512,3.1486e-07,False,1.2389,0.26222,True,4.396,0.013389,0.7322,0.69344,Kruskal-Wallis,0.69344,False
+cpu,io,2-way (N*S),Type III,per_token_lat_ms,num_workers:size,6,11278.209,0.14,0.97,0.9512,3.1486e-07,False,1.2389,0.26222,True,1.7975,0.10053,,,ANOVA_F (assumptions violated),0.10053,False
+cpu,io,2-way (N*S),Type III,per_token_lat_ms,Residual,228,238428.7876,3.0,0.97,0.9512,3.1486e-07,False,1.2389,0.26222,True,,,,,Error,,False
+cpu,io,2-way (N*S),Type III,throughput_tok_s,num_workers,3,84.4068,96.59,0.9688,0.8757,4.3216e-13,False,4.9406,7.1319e-07,False,2350.2166,4.0389e-171,224.5008,2.1366e-48,Kruskal-Wallis,2.1366e-48,True
+cpu,io,2-way (N*S),Type III,throughput_tok_s,size,2,0.0931,0.11,0.9688,0.8757,4.3216e-13,False,4.9406,7.1319e-07,False,3.8877,0.021865,0.7322,0.69344,Kruskal-Wallis,0.69344,False
+cpu,io,2-way (N*S),Type III,throughput_tok_s,num_workers:size,6,0.1606,0.18,0.9688,0.8757,4.3216e-13,False,4.9406,7.1319e-07,False,2.2356,0.040752,,,ANOVA_F (assumptions violated),0.040752,True
+cpu,io,2-way (N*S),Type III,throughput_tok_s,Residual,228,2.7295,3.12,0.9688,0.8757,4.3216e-13,False,4.9406,7.1319e-07,False,,,,,Error,,False
+cpu,io,2-way (N*S),Type III,jitter_ms,num_workers,3,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,io,2-way (N*S),Type III,jitter_ms,size,2,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,io,2-way (N*S),Type III,jitter_ms,num_workers:size,6,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,io,2-way (N*S),Type III,jitter_ms,Residual,228,0.0,0.0,,,,False,,,False,,,,,Error,,False
+cpu,mem,2-way (N*S),Type III,ttft_ms,num_workers,3,2681209.5706,79.33,0.7999,0.9778,0.00081651,False,2.7721,0.0021319,False,301.2588,5.1265e-79,183.4268,1.6047e-39,Kruskal-Wallis,1.6047e-39,True
+cpu,mem,2-way (N*S),Type III,ttft_ms,size,2,4818.7816,0.14,0.7999,0.9778,0.00081651,False,2.7721,0.0021319,False,0.8122,0.44518,0.691,0.70786,Kruskal-Wallis,0.70786,False
+cpu,mem,2-way (N*S),Type III,ttft_ms,num_workers:size,6,17392.1642,0.51,0.7999,0.9778,0.00081651,False,2.7721,0.0021319,False,0.9771,0.44147,,,ANOVA_F (assumptions violated),0.44147,False
+cpu,mem,2-way (N*S),Type III,ttft_ms,Residual,228,676401.6598,20.01,0.7999,0.9778,0.00081651,False,2.7721,0.0021319,False,,,,,Error,,False
+cpu,mem,2-way (N*S),Type III,per_token_lat_ms,num_workers,3,27515988.9964,89.79,0.916,0.7187,7.3701e-20,False,13.9595,2.1759e-20,False,812.5135,2.1288e-121,228.8606,2.4388e-49,Kruskal-Wallis,2.4388e-49,True
+cpu,mem,2-way (N*S),Type III,per_token_lat_ms,size,2,143366.1734,0.47,0.916,0.7187,7.3701e-20,False,13.9595,2.1759e-20,False,6.3501,0.0020713,0.3022,0.85978,Kruskal-Wallis,0.85978,False
+cpu,mem,2-way (N*S),Type III,per_token_lat_ms,num_workers:size,6,410272.7024,1.34,0.916,0.7187,7.3701e-20,False,13.9595,2.1759e-20,False,6.0574,6.6848e-06,,,ANOVA_F (assumptions violated),6.6848e-06,True
+cpu,mem,2-way (N*S),Type III,per_token_lat_ms,Residual,228,2573760.4091,8.4,0.916,0.7187,7.3701e-20,False,13.9595,2.1759e-20,False,,,,,Error,,False
+cpu,mem,2-way (N*S),Type III,throughput_tok_s,num_workers,3,22.8155,95.41,0.9605,0.886,1.8188e-12,False,7.1003,2.4042e-10,False,1833.9237,2.8217e-159,228.8606,2.4388e-49,Kruskal-Wallis,2.4388e-49,True
+cpu,mem,2-way (N*S),Type III,throughput_tok_s,size,2,0.0401,0.17,0.9605,0.886,1.8188e-12,False,7.1003,2.4042e-10,False,4.8329,0.0087978,0.3022,0.85978,Kruskal-Wallis,0.85978,False
+cpu,mem,2-way (N*S),Type III,throughput_tok_s,num_workers:size,6,0.1119,0.47,0.9605,0.886,1.8188e-12,False,7.1003,2.4042e-10,False,4.498,0.00025023,,,ANOVA_F (assumptions violated),0.00025023,True
+cpu,mem,2-way (N*S),Type III,throughput_tok_s,Residual,228,0.9455,3.95,0.9605,0.886,1.8188e-12,False,7.1003,2.4042e-10,False,,,,,Error,,False
+cpu,mem,2-way (N*S),Type III,jitter_ms,num_workers,3,1065666.7194,18.11,0.9153,0.6281,1.583e-22,False,2.1026,0.021054,False,162.5263,2.3634e-56,81.9584,1.1666e-17,Kruskal-Wallis,1.1666e-17,True
+cpu,mem,2-way (N*S),Type III,jitter_ms,size,2,1180016.1643,20.05,0.9153,0.6281,1.583e-22,False,2.1026,0.021054,False,269.9488,7.5858e-61,32.3599,9.4004e-08,Kruskal-Wallis,9.4004e-08,True
+cpu,mem,2-way (N*S),Type III,jitter_ms,num_workers:size,6,3141477.5283,53.38,0.9153,0.6281,1.583e-22,False,2.1026,0.021054,False,239.5555,1.7819e-95,,,ANOVA_F (assumptions violated),1.7819e-95,True
+cpu,mem,2-way (N*S),Type III,jitter_ms,Residual,228,498323.6026,8.47,0.9153,0.6281,1.583e-22,False,2.1026,0.021054,False,,,,,Error,,False
+cpu,os,1-way (N),Type II,ttft_ms,num_workers,3,199554.7423,65.65,0.6565,0.9312,0.000335,False,5.5465,0.0016981,False,48.4066,1.3356e-17,59.5281,7.4139e-13,Kruskal-Wallis,7.4139e-13,True
+cpu,os,1-way (N),Type II,ttft_ms,Residual,76,104435.8489,34.35,0.6565,0.9312,0.000335,False,5.5465,0.0016981,False,,,,,Error,,False
+cpu,os,1-way (N),Type II,per_token_lat_ms,num_workers,3,7380537.0303,79.59,0.7959,0.9354,0.00055329,False,7.4874,0.00018626,False,98.7871,3.7386e-26,67.9118,1.1949e-14,Kruskal-Wallis,1.1949e-14,True
+cpu,os,1-way (N),Type II,per_token_lat_ms,Residual,76,1892693.3135,20.41,0.7959,0.9354,0.00055329,False,7.4874,0.00018626,False,,,,,Error,,False
+cpu,os,1-way (N),Type II,throughput_tok_s,num_workers,3,33.8885,86.68,0.8668,0.9768,0.15432,True,0.9005,0.44502,True,164.8759,3.515e-33,67.9118,1.1949e-14,ANOVA_F,3.515e-33,True
+cpu,os,1-way (N),Type II,throughput_tok_s,Residual,76,5.207,13.32,0.8668,0.9768,0.15432,True,0.9005,0.44502,True,,,,,Error,,False
+cpu,os,1-way (N),Type II,jitter_ms,num_workers,3,,0.0,,,,False,,,False,,,,,ANOVA_F (assumptions violated),,False
+cpu,os,1-way (N),Type II,jitter_ms,Residual,76,0.0,0.0,,,,False,,,False,,,,,Error,,False

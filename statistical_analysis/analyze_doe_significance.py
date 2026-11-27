@@ -671,6 +671,12 @@ def generate_comparative_plots(
                 .reindex(columns=[c for c in N_ORDER if c in sub_dev["num_workers"].unique()])
             )
             cmap = "YlOrRd_r" if m == "throughput_tok_s" else "YlOrRd"
+            if piv.empty or piv.isna().all().all():
+                # Nessuna run stressor per questo device (es. campagna solo CPU o solo GPU)
+                ax.text(0.5, 0.5, f"Nessun dato {dev.upper()}", ha="center", va="center", transform=ax.transAxes)
+                ax.set_title(f"{dev.upper()} | {METRIC_LABELS[m]}", fontsize=11, fontweight="bold")
+                ax.set_xticks([])
+                continue
             sns.heatmap(
                 piv,
                 annot=True,
@@ -710,6 +716,10 @@ def generate_comparative_plots(
             )
             col_order = [c for c in ["Fattore N (Workers)", "Fattore S (Size)", "Interazione N x S", "Errore Sperimentale"] if c in piv_imp.columns]
             piv_imp = piv_imp[col_order]
+            if piv_imp.empty:
+                ax.text(0.5, 0.5, f"Nessun dato {dev.upper()}", ha="center", va="center", transform=ax.transAxes)
+                ax.set_title(f"{dev.upper()} | {METRIC_LABELS[target_m]}", fontsize=11, fontweight="bold")
+                continue
             piv_imp.plot(kind="bar", stacked=True, ax=ax, colormap="tab20c", edgecolor="black", linewidth=0.5)
             ax.set_title(f"{dev.upper()} | Varianza Spiegata (SS/SST %) — {METRIC_LABELS[target_m]}", fontsize=11, fontweight="bold")
             ax.set_ylabel("Quota Varianza (%)" if idx == 0 else "")
@@ -760,6 +770,10 @@ def _plot_cdf_grid(df_tasks: pd.DataFrame, out_dir: Path, complementary: bool = 
         for c_idx, m in enumerate(ecdf_metrics):
             ax = axes[r_idx, c_idx]
             df_plot = df_dev[df_dev[m] > 0].copy() if m != "throughput_tok_s" else df_dev
+            if df_plot.empty:
+                ax.text(0.5, 0.5, f"Nessun dato {dev.upper()}", ha="center", va="center", transform=ax.transAxes)
+                ax.set_title(f"{dev.upper()} | {METRIC_LABELS[m]}", fontsize=11, fontweight="bold")
+                continue
             sns.ecdfplot(
                 data=df_plot,
                 x=m,
